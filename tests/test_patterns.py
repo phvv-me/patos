@@ -9,6 +9,7 @@ from patos import Flyweight, Registry, Singleton
 
 def test_registry_roots_and_membership() -> None:
     """A root owns itself and its subclasses in one shared list; no root means no lookup."""
+
     class Shape(Registry):
         pass
 
@@ -28,6 +29,7 @@ def test_registry_roots_and_membership() -> None:
 
 def test_registry_dispatch_tries_each_and_reraises_last() -> None:
     """dispatch tries each impl, returns the first success, re-raises the last error."""
+
     class Codec(Registry):
         @classmethod
         def from_dispatch(cls, *args: object, **kwargs: object) -> Self:
@@ -88,6 +90,7 @@ def test_singleton_one_instance_init_runs_once() -> None:
 )
 def test_flyweight_interns_by_args(a: int | str, b: int | str) -> None:
     """Equal args share one instance without re-running __init__; distinct args share iff equal."""
+
     class Node(Flyweight):
         def __init__(self, value: int | str, *, tag: str = "x") -> None:
             self.value = value

@@ -36,6 +36,7 @@ def test_strategy_select_resolves_default_and_errors() -> None:
 
 def test_strategy_first_available_picks_first_true() -> None:
     """first_available picks the first true available(), treating plain impls as available."""
+
     class Maybe:
         def __init__(self, ok: bool) -> None:
             self.ok = ok
@@ -163,6 +164,7 @@ def test_flags_separator_collapses_to_one_token(items: Sequence[str]) -> None:
 
 def test_strflag_carries_string_and_or_combines() -> None:
     """Members keep their string with power-of-two values and OR-combine in declaration order."""
+
     class Opt(StrFlag):
         ALL = "-a"
         BIG = "--big"
