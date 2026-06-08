@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="patos">
+  <title>patos</title>
+  <rect width="64" height="64" rx="14" fill="#0f766e"/>
+  <!-- duck head + bill, bold enough to read at 16px -->
+  <circle cx="28" cy="28" r="13" fill="#fbbf24"/>
+  <circle cx="32" cy="24" r="2.4" fill="#1c1917"/>
+  <path d="M40 28 q13 -1 13 5 q0 5 -13 4 q-3 -4 0 -9 Z" fill="#f97316"/>
+  <!-- body hint -->
+  <path d="M18 46 q-6 -1 -6 -8 q0 -8 11 -8 q11 0 14 9 q-9 8 -19 7 Z" fill="#f59e0b"/>
+</svg>

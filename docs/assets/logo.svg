@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" role="img" aria-label="patos">
+  <title>patos</title>
+  <!-- pond ring -->
+  <circle cx="50" cy="50" r="46" fill="#0f766e"/>
+  <circle cx="50" cy="50" r="46" stroke="#14b8a6" stroke-width="3"/>
+  <!-- water line -->
+  <path d="M4 62 Q50 70 96 62 L96 96 Q50 96 4 96 Z" fill="#115e59"/>
+  <!-- duck body -->
+  <path d="M30 64
+           q-9 -2 -9 -12
+           q0 -13 16 -15
+           q4 -13 18 -13
+           q16 0 18 16
+           q9 1 9 10
+           q0 14 -18 14 Z"
+        fill="#fbbf24"/>
+  <!-- head -->
+  <circle cx="64" cy="38" r="13" fill="#facc15"/>
+  <!-- eye -->
+  <circle cx="68" cy="35" r="2.6" fill="#1c1917"/>
+  <!-- bill -->
+  <path d="M76 38 q12 -1 12 5 q0 5 -12 4 q-3 -4 0 -9 Z" fill="#f97316"/>
+  <!-- wing -->
+  <path d="M40 55 q12 -8 24 -3 q-7 9 -20 7 q-3 -2 -4 -4 Z" fill="#f59e0b"/>
+</svg>

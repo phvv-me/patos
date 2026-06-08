@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "patos"
+version = "0.0.1"
+description = "Typed Python design and dispatch patterns, pip one in or copy one in and own the file"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Pedro Valois", email = "contact@phvv.me" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Libraries",
+  "Typing :: Typed",
+]
+# Zero runtime dependencies on purpose: every pato is pure stdlib, so the whole flock
+# installs with nothing transitive, and any single pato copies cleanly into your own repo.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "hypothesis>=6",
+  "pyrefly>=1",
+  "pytest>=9",
+  "pytest-cov>=5",
+  "pytest-randomly>=3",
+  "ruff>=0.15",
+]
+docs = [
+  "mkdocs-material>=9.5",
+  "mkdocs-llmstxt>=0.2",
+  "mkdocs-static-i18n>=1.2",
+]
+
+[project.urls]
+Homepage = "https://phvv.me/patos"
+Repository = "https://github.com/phvv-me/patos"
+Issues = "https://github.com/phvv-me/patos/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/patos"]
+
+[tool.ruff]
+line-length = 99
+target-version = "py311"
+extend-exclude = [".chefe"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q -ra --strict-markers"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["patos"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]

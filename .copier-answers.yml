@@ -1,0 +1,8 @@
+# Changes here will be overwritten by Copier; do not edit by hand.
+_commit: 31acf4c
+_src_path: packages/oss-template
+cli_command: patos
+description: Typed Python design and dispatch patterns, pip one in or copy one in
+    and own the file
+project_name: patos
+

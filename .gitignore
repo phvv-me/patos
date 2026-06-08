@@ -1,0 +1,32 @@
+# system
+.DS_Store
+
+# editors
+.idea/
+.vscode/
+
+# logs
+*.log
+
+# docs
+site/
+
+# generated
+dist/
+build/
+
+# chefe (compiled manifests + provisioned env)
+.chefe/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+.pyrefly/
+.mypy_cache/
+.hypothesis/
+.coverage
+htmlcov/
+*.egg-info/

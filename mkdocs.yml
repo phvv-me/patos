@@ -1,0 +1,122 @@
+site_name: patos
+site_description: A flock of typed Python patterns. Pip one in, or copy one in and own the file.
+site_url: https://phvv.me/patos/
+repo_url: https://github.com/phvv-me/patos
+repo_name: phvv-me/patos
+copyright: Apache-2.0 - Pedro Valois
+
+theme:
+  name: material
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: amber
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: amber
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.tabs
+    - navigation.top
+    - navigation.sections
+    - navigation.indexes
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+
+extra_css:
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Patos:
+      - patos/registry.md
+      - patos/singleton.md
+      - patos/flyweight.md
+      - patos/strategy.md
+      - patos/dispatch.md
+      - patos/flags.md
+      - patos/strflag.md
+  - Reference:
+      - API: api.md
+      - Release: release.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path:
+        - .
+        - packages/patos
+      check_paths: true
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      reconfigure_material: true
+      reconfigure_search: true
+      fallback_to_default: true
+      languages:
+        - locale: en
+          name: 🇺🇸 English
+          default: true
+        - locale: pt-BR
+          name: 🇧🇷 Português (BR)
+          build: true
+        - locale: es
+          name: 🇲🇽 Español
+          build: true
+        - locale: ja
+          name: 🇯🇵 日本語
+          build: true
+        - locale: zh
+          name: 🇨🇳 简体中文
+          build: true
+  - llmstxt:
+      markdown_description: Typed Python design and dispatch patterns, pip one in or copy one in and own the file
+      full_output: llms-full.txt
+      sections:
+        Usage:
+          - index.md
+        Patos:
+          - patos/registry.md
+          - patos/singleton.md
+          - patos/flyweight.md
+          - patos/strategy.md
+          - patos/dispatch.md
+          - patos/flags.md
+          - patos/strflag.md
+        Reference:
+          - api.md
+          - release.md

@@ -1,0 +1,130 @@
+/* patos brand layer — a duck-yellow flock on a pond-teal accent.
+   Space Grotesk headings, warm primary, teal accent, soft cards. */
+
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap");
+
+/* palette tokens
+   - duck:  warm amber/yellow, the flock and the primary header
+   - pond:  teal/blue, the accent (links, focus, active state)
+   - ink:   near-black neutral for text on light surfaces */
+:root {
+  --duck-500: #f59e0b;
+  --duck-600: #d97706;
+  --duck-300: #fbbf24;
+  --pond-500: #0d9488;
+  --pond-400: #14b8a6;
+  --pond-300: #2dd4bf;
+  --ink-900: #1c1917;
+}
+
+/* light scheme: amber primary header, teal accent */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--duck-600);
+  --md-primary-fg-color--light: var(--duck-500);
+  --md-primary-fg-color--dark: #b45309;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: #ffffffcc;
+  --md-accent-fg-color: var(--pond-500);
+  --md-accent-fg-color--transparent: #0d948814;
+}
+
+/* dark scheme: keep the duck warm but lift it, brighten the pond accent */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--duck-500);
+  --md-primary-fg-color--light: var(--duck-300);
+  --md-primary-fg-color--dark: var(--duck-600);
+  --md-accent-fg-color: var(--pond-300);
+  --md-accent-fg-color--transparent: #2dd4bf1f;
+  --md-typeset-a-color: var(--pond-300);
+}
+
+/* sharp, slightly tightened headings */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-header__title,
+.md-nav__title {
+  font-family: "Space Grotesk", var(--md-text-font-family), sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset h1 {
+  font-weight: 700;
+}
+
+/* a teal seam under the amber header, the brand cue */
+.md-header {
+  border-bottom: 2px solid var(--pond-400);
+}
+
+/* tabs: teal underline on the active page */
+.md-tabs__link--active {
+  opacity: 1;
+}
+
+/* softer corners on code + cards for a less boxy, more modern feel */
+.md-typeset pre > code,
+.md-typeset .grid.cards > ul > li {
+  border-radius: 10px;
+}
+
+.md-typeset .grid.cards > ul > li {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  transition: border-color 120ms, box-shadow 120ms, transform 120ms;
+}
+
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--pond-400);
+  box-shadow: 0 6px 20px -12px var(--pond-500);
+  transform: translateY(-2px);
+}
+
+/* a bigger header logo so the brand mark reads at a glance */
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 1.9rem;
+  width: 1.9rem;
+}
+
+/* centered hero on the landing page */
+.hero {
+  text-align: center;
+  padding: 1.2rem 0 0.4rem;
+}
+
+.hero .hero-logo {
+  display: block;
+  width: 140px;
+  margin: 0 auto 0.6rem;
+  filter: drop-shadow(0 8px 24px -10px var(--pond-500));
+}
+
+.hero h1 {
+  margin: 0 0 0.25rem;
+  font-size: 2.6rem;
+}
+
+.hero .tagline {
+  font-size: 1.05rem;
+  color: var(--md-default-fg-color--light);
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+/* a small pill used for the "two ways to use" callouts */
+.md-typeset .pill {
+  display: inline-block;
+  padding: 0.15em 0.6em;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--md-accent-fg-color--transparent);
+  color: var(--md-accent-fg-color);
+}
+
+/* center mermaid diagrams */
+.md-typeset .mermaid {
+  text-align: center;
+}
