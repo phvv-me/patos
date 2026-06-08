@@ -10,7 +10,7 @@ theme:
   logo: assets/logo.svg
   favicon: assets/favicon.svg
   font:
-    text: Inter
+    text: Space Grotesk
     code: JetBrains Mono
   icon:
     repo: fontawesome/brands/github
@@ -31,10 +31,12 @@ theme:
         name: Light mode
   features:
     - navigation.tabs
-    - navigation.top
     - navigation.sections
+    - navigation.top
     - navigation.indexes
     - navigation.footer
+    - navigation.instant
+    - navigation.instant.progress
     - search.suggest
     - search.highlight
     - content.code.copy
@@ -47,13 +49,15 @@ extra_css:
 nav:
   - Home: index.md
   - Patos:
-      - patos/registry.md
-      - patos/singleton.md
-      - patos/flyweight.md
-      - patos/strategy.md
-      - patos/dispatch.md
-      - patos/flags.md
-      - patos/strflag.md
+      - Creational:
+          - patos/singleton.md
+          - patos/flyweight.md
+      - Dispatch & selection:
+          - patos/registry.md
+          - patos/strategy.md
+          - patos/dispatch.md
+      - Command-line:
+          - patos/strflag.md
   - Reference:
       - API: api.md
       - Release: release.md
@@ -82,40 +86,20 @@ markdown_extensions:
 
 plugins:
   - search
-  - i18n:
-      docs_structure: suffix
-      reconfigure_material: true
-      reconfigure_search: true
-      fallback_to_default: true
-      languages:
-        - locale: en
-          name: 🇺🇸 English
-          default: true
-        - locale: pt-BR
-          name: 🇧🇷 Português (BR)
-          build: true
-        - locale: es
-          name: 🇲🇽 Español
-          build: true
-        - locale: ja
-          name: 🇯🇵 日本語
-          build: true
-        - locale: zh
-          name: 🇨🇳 简体中文
-          build: true
   - llmstxt:
       markdown_description: Typed Python design and dispatch patterns, pip one in or copy one in and own the file
       full_output: llms-full.txt
       sections:
         Usage:
           - index.md
-        Patos:
-          - patos/registry.md
+        Creational:
           - patos/singleton.md
           - patos/flyweight.md
+        Dispatch & selection:
+          - patos/registry.md
           - patos/strategy.md
           - patos/dispatch.md
-          - patos/flags.md
+        Command-line:
           - patos/strflag.md
         Reference:
           - api.md

@@ -1,10 +1,17 @@
 # API
 
 The stable public surface of patos. Every name here is importable straight from the top-level
-package, which lazily loads the one pato module that defines it.
+package.
 
 ```python
-from patos import Registry, Singleton, Flyweight, FlyweightMeta, Strategy, value_dispatch, flags, StrFlag
+from patos import (
+    Singleton,
+    FlyweightMeta,
+    Registry,
+    Strategy,
+    value_dispatch,
+    StrFlag,
+)
 ```
 
 ## Two ways to use a pato
@@ -24,12 +31,23 @@ into your own project. No dependency, no version pin, no tool, just one module y
 
 ## The flock
 
+### Creational
+
 | pato | exports | what it does |
 |---|---|---|
-| [registry](patos/registry.md) | `Registry` | self-registering class hierarchies via `__init_subclass__` |
 | [singleton](patos/singleton.md) | `Singleton` | one instance per class, `__init__` runs once |
-| [flyweight](patos/flyweight.md) | `Flyweight`, `FlyweightMeta` | intern instances by constructor args, build-once and immutable |
-| [strategy](patos/strategy.md) | `Strategy` | a named family of interchangeable implementations |
+| [flyweight](patos/flyweight.md) | `FlyweightMeta` | intern instances by constructor args, build-once and immutable |
+
+### Dispatch & selection
+
+| pato | exports | what it does |
+|---|---|---|
+| [registry](patos/registry.md) | `Registry` | self-registering class hierarchies via `__init_subclass__`, with try-each `dispatch` |
+| [strategy](patos/strategy.md) | `Strategy` | a named family of interchangeable implementations, with `first_available()` |
 | [dispatch](patos/dispatch.md) | `value_dispatch` | dispatch on a value the way `singledispatch` dispatches on a type |
-| [flags](patos/flags.md) | `flags` | turn keyword options into a CLI argv tuple |
+
+### Command-line
+
+| pato | exports | what it does |
+|---|---|---|
 | [strflag](patos/strflag.md) | `StrFlag` | an enum `Flag` whose members carry a literal string, OR-combinable and iterable |

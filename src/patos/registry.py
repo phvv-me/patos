@@ -17,11 +17,7 @@ class Registry:
 
         if Registry in cls.__bases__:
             cls.registry_entries = []
-
-        for base in cls.__mro__:
-            if "registry_entries" in base.__dict__:
-                base.registry_entries.append(cls)
-                return
+        cls.registry().append(cls)
 
     @classmethod
     def registry(cls) -> list[type["Registry"]]:

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" fill="none" role="img" aria-label="patos">
+  <title>patos</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f766e"/>
+      <stop offset="0.55" stop-color="#0d9488"/>
+      <stop offset="1" stop-color="#115e59"/>
+    </linearGradient>
+    <linearGradient id="pond" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+    <linearGradient id="duck" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fcd34d"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#fde68a"/>
+    </linearGradient>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="1280" height="320" fill="url(#bg)"/>
+
+  <!-- soft decorative ripples -->
+  <g opacity="0.10" stroke="#ffffff" stroke-width="3" fill="none">
+    <path d="M880 250 q30 -16 60 0 t60 0 t60 0 t60 0"/>
+    <path d="M900 280 q30 -16 60 0 t60 0 t60 0"/>
+    <circle cx="1120" cy="90" r="60"/>
+    <circle cx="1180" cy="150" r="34"/>
+  </g>
+
+  <!-- duck mark in a pond disc -->
+  <g transform="translate(120 80) scale(1.6)">
+    <circle cx="50" cy="50" r="46" fill="url(#pond)"/>
+    <path d="M4 64 Q50 74 96 64 L96 96 Q50 96 4 96 Z" fill="#0b5650" opacity="0.5"/>
+    <path d="M27 66 q-8 -2 -8 -12 q0 -14 17 -16 q4 -14 19 -14 q17 0 18 17 q9 1 9 11 q0 14 -19 14 Z" fill="url(#duck)"/>
+    <circle cx="64" cy="37" r="13.5" fill="#fcd34d"/>
+    <path d="M37 56 q13 -9 26 -3 q-7 10 -22 8 q-3 -2 -4 -5 Z" fill="#f59e0b"/>
+    <circle cx="68.5" cy="34" r="2.7" fill="#1c1917"/>
+    <path d="M77 37 q13 -1 13 5 q0 6 -13 5 q-3 -5 0 -10 Z" fill="#fb923c"/>
+  </g>
+
+  <!-- wordmark + tagline -->
+  <text x="420" y="172"
+        font-family="'Space Grotesk', 'Trebuchet MS', 'Helvetica Neue', Arial, sans-serif"
+        font-size="128" font-weight="700" letter-spacing="-4"
+        fill="url(#word)">patos</text>
+
+  <text x="424" y="226"
+        font-family="'Space Grotesk', 'Trebuchet MS', 'Helvetica Neue', Arial, sans-serif"
+        font-size="30" font-weight="500" letter-spacing="0.5"
+        fill="#cffafe">A flock of typed Python patterns.</text>
+
+  <text x="424" y="266"
+        font-family="'Space Grotesk', 'Trebuchet MS', 'Helvetica Neue', Arial, sans-serif"
+        font-size="30" font-weight="500" letter-spacing="0.5"
+        fill="#99f6e4">Pip one in, or copy one in and own the file.</text>
+</svg>

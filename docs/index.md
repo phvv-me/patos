@@ -1,20 +1,26 @@
 <div class="hero" markdown>
 
-![patos logo](assets/logo.svg){ .hero-logo }
+![patos](assets/banner.png){ .hero-banner }
 
-# patos
+<p class="tagline">A flock of typed, zero-dependency Python patterns. Pip one in, or copy one in and own the file.</p>
 
-<p class="tagline">A flock of typed Python patterns. Pip one in, or copy one in and own the file.</p>
+[Get started](#two-ways-to-use-a-pato){ .md-button .md-button--primary }
+[Browse the flock](#the-flock){ .md-button }
 
 </div>
 
 Each pattern is a single self-contained `pato` (a duck). Adopt one, and you get a tiny,
-fully typed, zero-dependency module that does one thing well. The flock is `patos`. A single
-duck is a `pato`.
+fully typed, standard-library-only module that does one thing well. The flock is `patos`. A
+single duck is a `pato`.
 
 ## Two ways to use a pato
 
-<span class="pill">pip it in</span> Install the whole flock and import the patterns you want.
+<div class="ways" markdown>
+
+<div class="way" markdown>
+<span class="pill">pip it in</span>
+
+Install the whole flock and import the patterns you want.
 
 ```sh
 pip install patos
@@ -23,14 +29,21 @@ pip install patos
 ```python
 from patos import Registry, Singleton
 ```
+</div>
 
-<span class="pill">copy it in</span> Open the duck's page, copy its source straight from the docs, and paste it
-into your own source tree. No runtime dependency, no version pin, no tool, just one module you can
-read and change.
+<div class="way" markdown>
+<span class="pill">copy it in</span>
 
-Every pato page ends with a **Source** section that shows the full module with a one-click copy
-button. The file is yours the moment you paste it. Edit it, rename it, delete the parts you do not
-need.
+Open a duck's page, copy its source from the **Source** section, and paste it into your own tree.
+No runtime dependency, no version pin, no tool, just one module you own.
+
+```python
+# paste src/patos/singleton.py
+# the file is yours now
+```
+</div>
+
+</div>
 
 ## Why patos
 
@@ -41,12 +54,9 @@ need.
 
 ## The flock
 
+### Creational
+
 <div class="grid cards" markdown>
-
--   ### [registry](patos/registry.md)
-
-    Self-registering class hierarchies. Subclasses enroll through `__init_subclass__`, and
-    `dispatch` tries each one until it builds.
 
 -   ### [singleton](patos/singleton.md)
 
@@ -55,19 +65,34 @@ need.
 
 -   ### [flyweight](patos/flyweight.md)
 
-    Intern instances by their constructor args. Build once, share forever, stay immutable.
+    A metaclass that interns instances by their constructor args. Build once, share forever, stay
+    immutable.
+
+</div>
+
+### Dispatch & selection
+
+<div class="grid cards" markdown>
+
+-   ### [registry](patos/registry.md)
+
+    Self-registering class hierarchies. Subclasses enroll through `__init_subclass__`, and
+    `dispatch` tries each one until it builds.
 
 -   ### [strategy](patos/strategy.md)
 
-    A named family of interchangeable implementations, picked at runtime or by first available.
+    A named family of interchangeable implementations, picked at runtime or by
+    `first_available()`.
 
 -   ### [dispatch](patos/dispatch.md)
 
     Dispatch on a value the way `singledispatch` dispatches on a type.
 
--   ### [flags](patos/flags.md)
+</div>
 
-    Turn keyword options into a clean CLI argv tuple.
+### Command-line
+
+<div class="grid cards" markdown>
 
 -   ### [strflag](patos/strflag.md)
 

@@ -1,19 +1,22 @@
 /* patos brand layer — a duck-yellow flock on a pond-teal accent.
-   Space Grotesk headings, warm primary, teal accent, soft cards. */
+   Space Grotesk headings, warm primary, teal accent, soft cards,
+   generous whitespace for the es-toolkit look. */
 
-@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap");
 
 /* palette tokens
    - duck:  warm amber/yellow, the flock and the primary header
    - pond:  teal/blue, the accent (links, focus, active state)
    - ink:   near-black neutral for text on light surfaces */
 :root {
+  --duck-300: #fcd34d;
+  --duck-400: #fbbf24;
   --duck-500: #f59e0b;
   --duck-600: #d97706;
-  --duck-300: #fbbf24;
-  --pond-500: #0d9488;
-  --pond-400: #14b8a6;
   --pond-300: #2dd4bf;
+  --pond-400: #14b8a6;
+  --pond-500: #0d9488;
+  --pond-600: #0f766e;
   --ink-900: #1c1917;
 }
 
@@ -58,26 +61,8 @@
   border-bottom: 2px solid var(--pond-400);
 }
 
-/* tabs: teal underline on the active page */
 .md-tabs__link--active {
   opacity: 1;
-}
-
-/* softer corners on code + cards for a less boxy, more modern feel */
-.md-typeset pre > code,
-.md-typeset .grid.cards > ul > li {
-  border-radius: 10px;
-}
-
-.md-typeset .grid.cards > ul > li {
-  border: 1px solid var(--md-default-fg-color--lightest);
-  transition: border-color 120ms, box-shadow 120ms, transform 120ms;
-}
-
-.md-typeset .grid.cards > ul > li:hover {
-  border-color: var(--pond-400);
-  box-shadow: 0 6px 20px -12px var(--pond-500);
-  transform: translateY(-2px);
 }
 
 /* a bigger header logo so the brand mark reads at a glance */
@@ -87,41 +72,106 @@
   width: 1.9rem;
 }
 
-/* centered hero on the landing page */
+/* ---- landing hero -------------------------------------------------- */
+
 .hero {
   text-align: center;
-  padding: 1.2rem 0 0.4rem;
+  padding: 1.4rem 0 1.2rem;
 }
 
-.hero .hero-logo {
+.hero .hero-banner {
   display: block;
-  width: 140px;
-  margin: 0 auto 0.6rem;
-  filter: drop-shadow(0 8px 24px -10px var(--pond-500));
-}
-
-.hero h1 {
-  margin: 0 0 0.25rem;
-  font-size: 2.6rem;
+  width: min(100%, 880px);
+  margin: 0 auto 1.4rem;
+  border-radius: 18px;
+  box-shadow: 0 24px 60px -28px var(--pond-600);
 }
 
 .hero .tagline {
-  font-size: 1.05rem;
+  font-size: 1.18rem;
+  line-height: 1.5;
   color: var(--md-default-fg-color--light);
-  max-width: 40rem;
-  margin: 0 auto;
+  max-width: 42rem;
+  margin: 0 auto 1.4rem;
 }
 
-/* a small pill used for the "two ways to use" callouts */
+/* hide the auto-rendered h1 on the landing page; the banner is the title */
+.hero + h1,
+.md-typeset .hero ~ h1:first-of-type {
+  display: none;
+}
+
+.hero .md-button {
+  margin: 0.2rem 0.3rem;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+/* ---- two-ways panels ----------------------------------------------- */
+
+.md-typeset .ways {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.1rem;
+  margin: 1rem 0 0.5rem;
+}
+
+.md-typeset .way {
+  padding: 1.2rem 1.3rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 14px;
+  background: var(--md-default-fg-color--lightest);
+  background: color-mix(in srgb, var(--pond-400) 5%, transparent);
+}
+
+.md-typeset .way > p:first-child {
+  margin-top: 0;
+}
+
+/* ---- a small pill used for the "two ways to use" callouts ---------- */
+
 .md-typeset .pill {
   display: inline-block;
-  padding: 0.15em 0.6em;
+  padding: 0.18em 0.7em;
   border-radius: 999px;
   font-size: 0.72rem;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
   background: var(--md-accent-fg-color--transparent);
   color: var(--md-accent-fg-color);
+}
+
+/* ---- card grid ----------------------------------------------------- */
+
+.md-typeset .grid.cards {
+  margin: 0.6rem 0 1.6rem;
+}
+
+.md-typeset .grid.cards > ul > li {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 14px;
+  padding: 1.1rem 1.2rem;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--pond-400);
+  box-shadow: 0 14px 34px -20px var(--pond-500);
+  transform: translateY(-3px);
+}
+
+.md-typeset .grid.cards > ul > li > h3 {
+  margin: 0 0 0.4rem;
+}
+
+.md-typeset .grid.cards > ul > li > h3 > a {
+  color: var(--md-accent-fg-color);
+}
+
+/* softer corners on code blocks for a less boxy, more modern feel */
+.md-typeset pre > code {
+  border-radius: 12px;
 }
 
 /* center mermaid diagrams */

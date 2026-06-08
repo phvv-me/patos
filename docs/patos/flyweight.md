@@ -18,11 +18,14 @@ the type, keeps instances immutable, and builds each one exactly once.
 
 ## Usage
 
+`FlyweightMeta` is a metaclass. Set it on the class you want interned, and construction caches by
+the constructor arguments.
+
 ```python
-from patos import Flyweight
+from patos import FlyweightMeta
 
 
-class Color(Flyweight):
+class Color(metaclass=FlyweightMeta):
     def __init__(self, name: str) -> None:
         self.name = name
 
@@ -39,18 +42,17 @@ Because `FlyweightMeta` composes with `ABCMeta`, a flyweight can also be abstrac
 
 ```python
 from abc import abstractmethod
-from patos import Flyweight
+from patos import FlyweightMeta
 
 
-class Shape(Flyweight):
+class Shape(metaclass=FlyweightMeta):
     @abstractmethod
     def area(self) -> float: ...
 ```
 
 ## Public API
 
-- `Flyweight`. Base class. Subclass it, and construction interns by the constructor arguments.
-- `FlyweightMeta`. The metaclass that performs interning. It composes with `ABCMeta`, so flyweights can be abstract base classes too.
+- `FlyweightMeta`. The metaclass that performs interning. Use it as `class X(metaclass=FlyweightMeta)`. The first construction with a given `(args, kwargs)` builds and caches the instance, and every later construction with equal arguments returns that same object without re-running `__init__`. Each class keeps its own cache and arguments must be hashable. It composes with `ABCMeta`, so a flyweight can also be an abstract base class.
 
 ## Source
 

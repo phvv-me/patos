@@ -1,10 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="patos">
   <title>patos</title>
-  <rect width="64" height="64" rx="14" fill="#0f766e"/>
-  <!-- duck head + bill, bold enough to read at 16px -->
-  <circle cx="28" cy="28" r="13" fill="#fbbf24"/>
-  <circle cx="32" cy="24" r="2.4" fill="#1c1917"/>
-  <path d="M40 28 q13 -1 13 5 q0 5 -13 4 q-3 -4 0 -9 Z" fill="#f97316"/>
+  <defs>
+    <linearGradient id="pond" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#pond)"/>
   <!-- body hint -->
-  <path d="M18 46 q-6 -1 -6 -8 q0 -8 11 -8 q11 0 14 9 q-9 8 -19 7 Z" fill="#f59e0b"/>
+  <path d="M17 47 q-6 -1 -6 -9 q0 -9 12 -9 q11 0 14 10 q-9 8 -20 8 Z" fill="#f59e0b"/>
+  <!-- head, bold enough to read at 16px -->
+  <circle cx="29" cy="27" r="13.5" fill="#fcd34d"/>
+  <!-- eye -->
+  <circle cx="33.5" cy="23" r="2.5" fill="#1c1917"/>
+  <!-- bill -->
+  <path d="M42 27 q13 -1 13 5 q0 6 -13 5 q-3 -5 0 -10 Z" fill="#fb923c"/>
 </svg>

@@ -21,11 +21,3 @@ class FlyweightMeta(ABCMeta):
         if key not in cache:
             cache[key] = super().__call__(*args, **kwargs)
         return cache[key]
-
-
-class Flyweight(metaclass=FlyweightMeta):
-    """Base for interned, build-once value objects: equal constructor arguments share one
-    instance (the flyweight / multiton pattern). Fits objects that are expensive to build and
-    immutable once built -- a lattice codebook, a trellis -- so a sweep or repeated
-    construction pays the build cost once. `Singleton` is the degenerate no-argument case.
-    """

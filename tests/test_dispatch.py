@@ -1,11 +1,6 @@
-from collections.abc import Sequence
-
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
 
 from patos import Strategy, StrFlag, value_dispatch
-from patos.flags import flags
 from patos.strategy import StrategyError
 
 
@@ -119,47 +114,6 @@ def test_value_dispatch_parametrised_form_and_unbound_repr() -> None:
     assert draw is dispatcher
     assert dispatcher(None, how="9bad") == "weird"
     assert not hasattr(dispatcher, "9bad")
-
-
-flag_cases = [
-    ({"verbose": True}, ("--verbose",)),
-    ({"name": "duck"}, ("--name", "duck")),
-    ({"count": 3}, ("--count", "3")),
-    ({"mem_gb": 8}, ("--mem-gb", "8")),
-    ({"skip": None}, ()),
-    ({"skip": False}, ()),
-    ({"skip": ""}, ()),
-    ({"tags": []}, ()),
-    ({"tags": ["a", "b"]}, ("--tags", "a", "--tags", "b")),
-]
-
-
-@pytest.mark.parametrize(("options", "expected"), flag_cases)
-def test_flags_value_kinds(options: dict[str, object], expected: tuple[str, ...]) -> None:
-    assert flags(**options) == expected
-
-
-def test_flags_joined_and_separator() -> None:
-    """joined emits --flag=value tokens; a separator collapses a sequence into one flag."""
-    assert flags(name="duck", joined=True) == ("--name=duck",)
-    assert flags(tags=["a", "b"], joined=True) == ("--tags=a", "--tags=b")
-    assert flags(tags=["a", "b", "c"], separator=",") == ("--tags", "a,b,c")
-    assert flags(tags=["a", "b"], separator=",", joined=True) == ("--tags=a,b",)
-
-
-@given(value=st.integers() | st.text(min_size=1))
-def test_flags_round_trips_scalar_value(value: int | str) -> None:
-    """A non-empty scalar always renders as the flag followed by its stringified value."""
-    assert flags(opt=value) == ("--opt", str(value))
-
-
-@given(items=st.lists(st.text(min_size=1).filter(lambda s: "," not in s), min_size=1))
-def test_flags_separator_collapses_to_one_token(items: Sequence[str]) -> None:
-    """A separator renders a sequence as the flag and one joined value token."""
-    argv = flags(items=items, separator=",")
-    assert argv[0] == "--items"
-    assert len(argv) == 2
-    assert argv[1].split(",") == list(items)
 
 
 def test_strflag_carries_string_and_or_combines() -> None:

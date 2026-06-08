@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from patos import Flyweight, Registry, Singleton
+from patos import FlyweightMeta, Registry, Singleton
 
 
 def test_registry_roots_and_membership() -> None:
@@ -91,7 +91,7 @@ def test_singleton_one_instance_init_runs_once() -> None:
 def test_flyweight_interns_by_args(a: int | str, b: int | str) -> None:
     """Equal args share one instance without re-running __init__; distinct args share iff equal."""
 
-    class Node(Flyweight):
+    class Node(metaclass=FlyweightMeta):
         def __init__(self, value: int | str, *, tag: str = "x") -> None:
             self.value = value
             self.built = getattr(self, "built", 0) + 1
@@ -107,10 +107,10 @@ def test_flyweight_interns_by_args(a: int | str, b: int | str) -> None:
 
 
 def test_flyweight_caches_are_per_class() -> None:
-    class A(Flyweight):
+    class A(metaclass=FlyweightMeta):
         pass
 
-    class B(Flyweight):
+    class B(metaclass=FlyweightMeta):
         pass
 
     assert A() is A()
