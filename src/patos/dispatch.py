@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 from collections.abc import Callable, Hashable
 from types import MappingProxyType
-from typing import Generic, ParamSpec, TypeVar, cast
+from typing import Generic, ParamSpec, TypeGuard, TypeVar, cast
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -92,7 +92,7 @@ class value_dispatch(Generic[P, R]):
         arg: explicit key, or the function itself in the bare/direct forms.
         name: explicit key, taking precedence over `arg` and the `__name__`.
         """
-        if callable(arg):
+        if self.is_impl(arg):
             return self.bind(arg, arg.__name__ if name is None else name)
         key = arg if name is None else name
 
@@ -100,6 +100,18 @@ class value_dispatch(Generic[P, R]):
             return self.bind(impl, impl.__name__ if key is None else key)
 
         return decorate
+
+    def is_impl(self, arg: Hashable | Callable[P, R] | None) -> TypeGuard[Callable[P, R]]:
+        """Narrow a `register` argument to this dispatcher's impl type when callable.
+
+        `callable()` alone leaves the `Hashable | Callable` union intact, since a
+        hashable key could itself be callable. As a method its guard is tied to the
+        dispatcher's own `P`/`R`, so a callable `arg` collapses to `Callable[P, R]`
+        and may be bound directly.
+
+        arg: the value passed to `register`, either a key or the function itself.
+        """
+        return callable(arg)
 
     def bind(self, impl: Callable[P, R], key: Hashable) -> Callable[P, R]:
         """Store `impl` under `key`, also exposing it as an attribute when key is an identifier."""

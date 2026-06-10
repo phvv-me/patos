@@ -18,7 +18,7 @@ An unchanged version is a no-op, so ordinary commits never publish.
 - Lint: `chefe run lint`
 - Typecheck: `chefe run typecheck`
 - Test: `chefe run test`
-- Build: `uv build`
+- Build: `python -m build`
 
 ## One-time setup
 

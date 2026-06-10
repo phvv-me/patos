@@ -66,11 +66,9 @@ Full documentation lives at [phvv.me/patos](https://phvv.me/patos).
 
 ## Development
 
-This project uses [uv](https://docs.astral.sh/uv/).
-
-- Install: `uv sync --extra dev`
-- Lint: `uv run ruff check . && uv run ruff format --check .`
-- Typecheck: `uv run pyrefly check`
-- Test: `uv run pytest`
-- Docs: `uv run --extra docs mkdocs build`
-- Build: `uv build`
+- Install: `pip install -e ".[dev]"`
+- Lint: `ruff check . && ruff format --check .`
+- Typecheck: `pyrefly check`
+- Test: `pytest`
+- Docs: `pip install -e ".[docs]" && mkdocs build`
+- Build: `python -m build`
