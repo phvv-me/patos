@@ -46,14 +46,33 @@ class YamlLoader(Loader):
         return cls(path)
 
 
-Loader.registry()           # [JsonLoader, YamlLoader]
+Loader.registry()           # [Loader, JsonLoader, YamlLoader]
+Loader.implementations()    # [JsonLoader, YamlLoader] -- concrete only, root dropped
 Loader.dispatch("a.yaml")   # YamlLoader instance, first impl that accepts the path
+```
+
+When implementations carry a key, look one up by name instead of walking the list:
+
+```python
+class Loader(Registry):
+    name = "base"
+
+
+class JsonLoader(Loader):
+    name = "json"
+
+
+Loader.find("json")         # JsonLoader
+Loader.find("toml")         # KeyError listing the known names
 ```
 
 ## Public API
 
 - `Registry`. Base mixin. Subclass it to start a flock.
-- `Registry.registry()`. List the concrete implementations owned by this class's nearest root.
+- `Registry.registry()`. List every enrolled class, the root included, owned by this class's nearest root.
+- `Registry.implementations()`. The concrete enrolled classes, dropping the root itself and any abstract bases. The view to fan out over real providers.
+- `Registry.find(name, attr="name")`. Return the implementation whose `attr` equals `name`, raising a clear `KeyError` listing the known keys when missing.
+- `Registry.root()`. The registry root that owns this class's implementation list.
 - `Registry.is_registry_root()`. Whether this class owns a registry.
 - `Registry.dispatch(*args, **kwargs)`. Try each implementation's `from_dispatch` and return the first success, re-raising the last error if all fail.
 - `Registry.from_dispatch(*args, **kwargs)`. Classmethod each implementation overrides to accept or reject the arguments.

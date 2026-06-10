@@ -3,7 +3,7 @@ from importlib.metadata import PackageNotFoundError, version
 from .dispatch import value_dispatch
 from .flyweight import FlyweightMeta
 from .registry import Registry
-from .singleton import Singleton
+from .singleton import Singleton, SingletonMeta
 from .strategy import Strategy
 from .strflag import StrFlag
 
@@ -16,6 +16,7 @@ __all__ = [
     "FlyweightMeta",
     "Registry",
     "Singleton",
+    "SingletonMeta",
     "StrFlag",
     "Strategy",
     "value_dispatch",

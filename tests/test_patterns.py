@@ -27,6 +27,56 @@ def test_registry_roots_and_membership() -> None:
         Registry.registry()
 
 
+def test_registry_implementations_excludes_root_and_abstract_bases(
+    codec_root: type[Registry],
+    codec_impls: tuple[type[Registry], type[Registry]],
+) -> None:
+    """`implementations()` keeps only concrete members, dropping the root and abstract bases."""
+    impls = codec_root.implementations()
+
+    assert tuple(impls) == codec_impls
+    assert codec_root not in impls
+    assert codec_root.root() is codec_root
+    assert all(not c.__abstractmethods__ for c in impls)
+    assert set(impls) < set(codec_root.registry())
+
+
+def test_registry_find_by_name_and_clear_error_on_miss(
+    codec_root: type[Registry],
+    codec_impls: tuple[type[Registry], type[Registry]],
+) -> None:
+    """`find` resolves a concrete impl by its `name` and reports the known keys on a miss."""
+    json_impl, yaml_impl = codec_impls
+
+    assert codec_root.find("json") is json_impl
+    assert codec_root.find("yaml") is yaml_impl
+    with pytest.raises(KeyError) as miss:
+        codec_root.find("binary")
+    message = miss.value.args[0]
+    assert "no implementation with name='binary'" in message
+    assert "'json'" in message and "'yaml'" in message
+    assert "'base'" not in message and "'binary'" not in message.split("Known")[1]
+
+
+def test_registry_find_honors_custom_attribute() -> None:
+    """`find` can key on any class attribute, not just the default `name`."""
+
+    class Driver(Registry):
+        scheme = "base"
+
+    class Http(Driver):
+        scheme = "http"
+
+    class File(Driver):
+        scheme = "file"
+
+    assert Driver.find("http", attr="scheme") is Http
+    assert Driver.find("file", attr="scheme") is File
+    with pytest.raises(KeyError) as miss:
+        Driver.find("ftp", attr="scheme")
+    assert "scheme='ftp'" in miss.value.args[0]
+
+
 def test_registry_dispatch_tries_each_and_reraises_last() -> None:
     """dispatch tries each impl, returns the first success, re-raises the last error."""
 
