@@ -43,7 +43,8 @@ iterates back into its parts, so you can feed the tokens straight into an argv l
 ## Public API
 
 - `StrFlag`. Base class. Subclass it and assign each member its literal string. Members are OR-combinable and iterable like any `enum.Flag`.
-- `StrFlag.string`. The literal token declared for a member, the thing you emit.
+- `StrFlag.string`. The token to emit. A declared member yields its literal and a composite joins its decomposed members' literals with spaces.
+- `StrFlag.literal`. The literal string declared for a single member.
 
 ## Source
 

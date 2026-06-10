@@ -53,7 +53,7 @@ def emit(node: str, **kw: object) -> str: ...
 ## Public API
 
 - `value_dispatch`. Decorator. Works bare (`@value_dispatch`) or parametrized (`@value_dispatch(kind="how")`).
-- `.register(key=None, *, name=None)`. Register an implementation, bare for the function name, or with an explicit key. Identifier keys are also exposed as attributes.
+- `.register(key=None, *, name=None)`. Register an implementation, bare for the function name, or with an explicit key. Identifier keys are also exposed as attributes unless they would shadow the dispatcher's own API.
 - `.registry`. Read-only view of the kind to implementation mapping.
 - `.kinds()`. All registered kinds, sorted by `repr`.
 - `key in dispatcher`. Membership test on registered kinds.

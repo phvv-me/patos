@@ -77,8 +77,8 @@ def test_registry_find_honors_custom_attribute() -> None:
     assert "scheme='ftp'" in miss.value.args[0]
 
 
-def test_registry_dispatch_tries_each_and_reraises_last() -> None:
-    """dispatch tries each impl, returns the first success, re-raises the last error."""
+def test_registry_dispatch_tries_each_and_groups_all_refusals() -> None:
+    """dispatch tries each impl, returns the first success, groups every refusal."""
 
     class Codec(Registry):
         @classmethod
@@ -99,8 +99,53 @@ def test_registry_dispatch_tries_each_and_reraises_last() -> None:
 
     assert isinstance(Codec.dispatch("json"), Json)
     assert isinstance(Json.dispatch("json"), Json)
-    with pytest.raises(TypeError, match="yaml refuses"):
+    with pytest.raises(ExceptionGroup, match="refused dispatch") as failure:
         Codec.dispatch("nope")
+    assert [str(error) for error in failure.value.exceptions] == ["not json", "yaml refuses"]
+
+
+def test_registry_class_under_two_roots_enrolls_in_both() -> None:
+    """A class deriving from two registry roots appears in both registries."""
+
+    class Reader(Registry):
+        pass
+
+    class Writer(Registry):
+        pass
+
+    class File(Reader, Writer):
+        pass
+
+    assert File in Reader.registry()
+    assert File in Writer.registry()
+    assert File.root() is Reader
+    assert Reader.registry() == [Reader, File]
+    assert Writer.registry() == [Writer, File]
+
+
+def test_registry_find_ignores_inherited_keys_and_rejects_duplicates() -> None:
+    """find matches own attributes only and raises when two impls share a key."""
+
+    class Codec(Registry):
+        name = "base"
+
+    class Json(Codec):
+        name = "json"
+
+    class Forgot(Json):
+        pass
+
+    assert Codec.find("json") is Json
+    with pytest.raises(KeyError) as miss:
+        Codec.find("base")
+    assert "no implementation with name='base'" in miss.value.args[0]
+
+    class Dup(Codec):
+        name = "json"
+
+    with pytest.raises(ValueError, match="duplicate name='json' on Json and Dup"):
+        Codec.find("json")
+    assert Forgot in Codec.registry()
 
 
 def test_registry_dispatch_with_no_impls_raises_runtime() -> None:
@@ -134,6 +179,18 @@ def test_singleton_one_instance_init_runs_once() -> None:
     assert Other() is not first
 
 
+def test_singleton_instance_lives_on_the_class_not_a_global() -> None:
+    """The cached instance is stored per class, so no metaclass-level table pins it."""
+
+    class Lone(Singleton):
+        pass
+
+    instance = Lone()
+    assert Lone.__dict__["singleton_instance"] is instance
+    assert "singleton_instance" not in Singleton.__dict__
+    assert not hasattr(type(Singleton), "instances")
+
+
 @given(
     a=st.integers() | st.text(),
     b=st.integers() | st.text(),
@@ -154,6 +211,21 @@ def test_flyweight_interns_by_args(a: int | str, b: int | str) -> None:
     assert by_kwargs
     assert distinct == (type(a) is type(b) and a == b)
     assert Node(a).built == 1
+
+
+def test_flyweight_interning_is_typed() -> None:
+    """Equal arguments of different types intern separately, like lru_cache(typed=True)."""
+
+    class Node(metaclass=FlyweightMeta):
+        def __init__(self, value: object = 0, *, tag: object = "x") -> None:
+            self.value = value
+
+    one, true, one_float = Node(1), Node(True), Node(1.0)
+    assert one is not true
+    assert one is not one_float
+    assert true is not one_float
+    assert Node(1) is one
+    assert Node(tag=1) is not Node(tag=True)
 
 
 def test_flyweight_caches_are_per_class() -> None:

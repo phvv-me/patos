@@ -4,6 +4,25 @@ All notable changes to patos are documented here.
 
 The format follows Keep a Changelog, and releases are cut from the version in `pyproject.toml`.
 
+## 0.0.6
+
+### Changed
+
+- `StrategyError` subclasses `LookupError` so its message renders verbatim, and it is exported at the package top level along with `Available`.
+- `Registry.dispatch` raises an `ExceptionGroup` carrying every implementation's refusal instead of only the last error with no chaining.
+- `Registry.find` matches own attributes only, so an inherited `name` no longer masquerades as a registration, and duplicate keys raise instead of silently last winning.
+- `SingletonMeta` stores the instance on the class itself, mirroring the flyweight, so classes are no longer pinned for the process lifetime by a global registry.
+- `FlyweightMeta` interns by argument types as well as values, so `Node(1)`, `Node(True)`, and `Node(1.0)` stay distinct.
+
+### Fixed
+
+- `value_dispatch.register` treated a callable dispatch key (a class, a partial) as the implementation, and `bind` could clobber the dispatcher's own API when an implementation was named `register` or `fallback`.
+- A parametrised dispatcher called before binding a function raises a clear `TypeError` instead of a bare `IndexError`, and a method style fallback whose first parameter is `self` is rejected with guidance.
+- `Strategy.factory` invalidates the resolution cache, so re registering a factory takes effect.
+- `first_available` accepts a plain boolean `available` attribute instead of crashing on a non callable.
+- Composite and empty `StrFlag` members now carry `.string`, joining their decomposed members' literals.
+- A class inheriting from two registry roots enrolls in both registries.
+
 ## 0.0.5
 
 ### Changed

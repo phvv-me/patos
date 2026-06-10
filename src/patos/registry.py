@@ -14,12 +14,18 @@ class Registry:
     registry_entries: ClassVar[list[type["Registry"]]]
 
     def __init_subclass__(cls, **kwargs: object) -> None:
-        """Register `cls` as a root (if a direct child) and into its nearest root."""
+        """Register `cls` as a root (if a direct child) and into every root it inherits.
+
+        A class deriving from two registry roots enrolls in both, so each root's
+        `registry()` sees it.
+        """
         super().__init_subclass__(**kwargs)
 
         if Registry in cls.__bases__:
             cls.registry_entries = []
-        cls.registry().append(cls)
+        for base in cls.__mro__:
+            if "registry_entries" in base.__dict__:
+                cast(type[Registry], base).registry_entries.append(cls)
 
     @classmethod
     def root(cls) -> type[Self]:
@@ -56,17 +62,28 @@ class Registry:
 
     @classmethod
     def find(cls, name: str, *, attr: str = "name") -> type[Self]:
-        """Return the concrete implementation whose `attr` equals `name`.
+        """Return the concrete implementation whose own `attr` equals `name`.
 
         The typed replacement for the `{c.name: c for c in Base.registry()}[name]` lookup that
-        keyed registries hand-roll. Matches against each implementation's `attr` value (default
-        the `name` class attribute) and raises a `KeyError` listing the known keys when missing.
+        keyed registries hand-roll. Only attributes defined on the implementation class itself
+        count, so a subclass that forgot its own key never answers for an inherited one, and a
+        duplicate key raises a `ValueError` instead of silently shadowing an earlier class. A
+        miss raises a `KeyError` listing the known keys.
 
         name: the key to look up.
         attr: the class attribute carrying each implementation's key.
         """
-        candidates = cls.implementations()
-        matches = {getattr(impl, attr): impl for impl in candidates if hasattr(impl, attr)}
+        matches: dict[object, type[Self]] = {}
+        for impl in cls.implementations():
+            if attr not in vars(impl):
+                continue
+            key = vars(impl)[attr]
+            if key in matches:
+                raise ValueError(
+                    f"{cls.__name__} has duplicate {attr}={key!r} on "
+                    f"{matches[key].__name__} and {impl.__name__}.",
+                )
+            matches[key] = impl
         try:
             return matches[name]
         except KeyError:
@@ -80,21 +97,25 @@ class Registry:
     def dispatch(cls, *args: object, **kwargs: object) -> Self:
         """Try each registered implementation's `from_dispatch`, returning the first success.
 
-        On a registry root, every concrete implementation is tried in order and the last raised
-        error is re-raised if all fail. Off a root, `cls` dispatches directly.
+        On a registry root, every concrete implementation is tried in order and, when all
+        fail, their refusals are raised together as an `ExceptionGroup` so no error is
+        lost. Off a root, `cls` dispatches directly.
         """
         if not cls.is_registry_root():
             return cls.from_dispatch(*args, **kwargs)
 
-        last_error: Exception | None = None
+        errors: list[Exception] = []
         for subclass in cls.implementations():
             try:
                 return subclass.from_dispatch(*args, **kwargs)
             except Exception as error:
-                last_error = error
+                errors.append(error)
 
-        if last_error is not None:
-            raise last_error
+        if errors:
+            raise ExceptionGroup(
+                f"every implementation in the {cls.__name__} registry refused dispatch",
+                errors,
+            )
         raise RuntimeError(f"No implementation found in {cls.__name__} registry.")
 
     @classmethod

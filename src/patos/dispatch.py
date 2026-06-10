@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 from collections.abc import Callable, Hashable
 from types import MappingProxyType
 from typing import Generic, ParamSpec, TypeGuard, TypeVar, cast
@@ -44,9 +45,19 @@ class value_dispatch(Generic[P, R]):
             self.bind_fallback(fallback)
 
     def bind_fallback(self, fallback: Callable[P, R]) -> None:
-        """Adopt `fallback` as the default impl and copy its metadata onto self."""
+        """Adopt `fallback` as the default impl and copy its metadata onto self.
+
+        Rejects functions whose first parameter is `self`, since a dispatcher stored in
+        a class body is not a descriptor and never binds as a method. `updated=()` keeps
+        the fallback's `__dict__` from being copied over the dispatcher's own state.
+        """
+        if inspect.isfunction(fallback) and fallback.__code__.co_varnames[:1] == ("self",):
+            raise TypeError(
+                "value_dispatch does not support methods. Decorate a module-level "
+                "function instead of one whose first parameter is self.",
+            )
         self.fallback = fallback
-        functools.update_wrapper(self, fallback)
+        functools.update_wrapper(self, fallback, updated=())
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """Bind the fallback on the parametrised first call, otherwise dispatch.
@@ -56,6 +67,12 @@ class value_dispatch(Generic[P, R]):
         route to its registered impl, falling back when the kind is absent.
         """
         if self.fallback is None:
+            if len(args) != 1 or kwargs or not callable(args[0]):
+                raise TypeError(
+                    "this value_dispatch has no function bound yet. Apply the "
+                    "parametrised dispatcher as a decorator to its fallback function "
+                    "before calling it.",
+                )
             self.bind_fallback(cast("Callable[P, R]", args[0]))
             # The parametrised form `@value_dispatch(kind=...)` then `@dispatcher` returns
             # the dispatcher itself, so this branch yields self rather than an `R`. The cast
@@ -86,8 +103,9 @@ class value_dispatch(Generic[P, R]):
         - `@register("foo")` or `@register(name="foo")`: explicit key.
         - `register(existing, name="alias")`: register an existing function.
 
-        When the key is a valid identifier the impl is also set as a dispatcher
-        attribute, enabling direct `dispatcher.foo(...)` calls.
+        When the key is a valid identifier that does not shadow the dispatcher's own
+        API or state, the impl is also set as a dispatcher attribute, enabling direct
+        `dispatcher.foo(...)` calls. Dispatch by key works either way.
 
         arg: explicit key, or the function itself in the bare/direct forms.
         name: explicit key, taking precedence over `arg` and the `__name__`.
@@ -97,28 +115,52 @@ class value_dispatch(Generic[P, R]):
         key = arg if name is None else name
 
         def decorate(impl: Callable[P, R]) -> Callable[P, R]:
-            return self.bind(impl, impl.__name__ if key is None else key)
+            return self.bind(impl, self.implied_key(impl) if key is None else key)
 
         return decorate
 
     def is_impl(self, arg: Hashable | Callable[P, R] | None) -> TypeGuard[Callable[P, R]]:
-        """Narrow a `register` argument to this dispatcher's impl type when callable.
+        """Narrow a `register` argument to an implementation when it is a plain function.
 
-        `callable()` alone leaves the `Hashable | Callable` union intact, since a
-        hashable key could itself be callable. As a method its guard is tied to the
-        dispatcher's own `P`/`R`, so a callable `arg` collapses to `Callable[P, R]`
-        and may be bound directly.
+        Only plain functions and bound methods count as implementations, so callable
+        dispatch keys (a class, a `functools.partial`) take the keyed path and
+        `@register(SomeClass)` keys on the class rather than binding it as an impl.
+        As a method, the guard is tied to the dispatcher's own `P`/`R`, collapsing
+        `arg` to `Callable[P, R]` so it may be bound directly.
 
         arg: the value passed to `register`, either a key or the function itself.
         """
-        return callable(arg)
+        return inspect.isfunction(arg) or inspect.ismethod(arg)
+
+    def implied_key(self, impl: Callable[P, R]) -> str:
+        """Derive the registry key from the impl's `__name__`, failing clearly when absent."""
+        try:
+            return impl.__name__
+        except AttributeError:
+            raise TypeError(
+                f"cannot infer a kind for {impl!r} because it has no __name__. "
+                f"Register it with an explicit key, for example register(name=...).",
+            ) from None
 
     def bind(self, impl: Callable[P, R], key: Hashable) -> Callable[P, R]:
-        """Store `impl` under `key`, also exposing it as an attribute when key is an identifier."""
-        self.registry_map[key] = impl
-        if isinstance(key, str) and key.isidentifier():
+        """Store `impl` under `key`, also exposing it as an attribute when that is safe."""
+        if self.exposable(key):
             setattr(self, key, impl)
+        self.registry_map[key] = impl
         return impl
+
+    def exposable(self, key: Hashable) -> TypeGuard[str]:
+        """Whether `key` may become a dispatcher attribute without shadowing its own API.
+
+        The key must be an identifier string colliding with neither class-level API
+        (`register`, `kinds`, ...) nor instance state, except for the attribute that a
+        previous registration of the same key already exposed.
+        """
+        if not (isinstance(key, str) and key.isidentifier()):
+            return False
+        if hasattr(type(self), key):
+            return False
+        return key not in vars(self) or vars(self)[key] is self.registry_map.get(key)
 
     @property
     def registry(self) -> MappingProxyType[Hashable, Callable[P, R]]:

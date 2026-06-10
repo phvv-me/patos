@@ -10,17 +10,22 @@ T = TypeVar("T")
 class Available(Protocol):
     """An implementation that can report whether it applies on the current host.
 
-    Implementations may expose `available()` for first-available selection. Those
-    that do not are treated as always available, so plain value objects need no
-    boilerplate to participate in named selection.
+    Implementations may expose `available()` for first-available selection. A plain
+    `available` boolean attribute also works at runtime. Those exposing neither are
+    treated as always available, so plain value objects need no boilerplate to
+    participate in named selection.
     """
 
     def available(self) -> bool:
         """Whether this implementation should be chosen in `first_available` mode."""
 
 
-class StrategyError(KeyError):
-    """Raised when a name is missing with no default, or no impl is available."""
+class StrategyError(LookupError):
+    """Raised when a name is missing with no default, or no impl is available.
+
+    A `LookupError` so failed selection still reads as a lookup failure, without
+    `KeyError`'s quoted-repr rendering mangling the message.
+    """
 
 
 class Strategy(Generic[T]):
@@ -58,9 +63,13 @@ class Strategy(Generic[T]):
     def factory(self, name: str, build: Callable[[], T]) -> None:
         """Register a zero-arg factory under `name`, built lazily on first resolution.
 
+        Re-registering a name drops any instance already cached for it, so the new
+        factory wins on the next resolution.
+
         name: the implementation key.
         build: produces the implementation the first time it is selected; cached after.
         """
+        self.cache.pop(name, None)
         self.factories[name] = build
 
     def add(self, name: str) -> Callable[[Callable[[], T]], Callable[[], T]]:
@@ -95,14 +104,19 @@ class Strategy(Generic[T]):
         )
 
     def first_available(self) -> T:
-        """Return the first registered impl whose `available()` is true, in insertion order.
+        """Return the first registered impl whose availability is true, in insertion order.
 
-        Implementations that do not expose `available()` count as always available,
-        so a plain default placed last is the catch-all.
+        Availability comes from the impl's `available` attribute, called when it is a
+        method and taken as the truth value when it is plain data. Implementations
+        without one count as always available, so a plain default placed last is the
+        catch-all.
         """
         for name in self.factories:
             impl = self.resolve(name)
-            if not isinstance(impl, Available) or impl.available():
+            availability = getattr(impl, "available", True)
+            if callable(availability):
+                availability = availability()
+            if availability:
                 return impl
         raise StrategyError(
             f"{self.name}: no available implementation among {sorted(self.factories)}"
