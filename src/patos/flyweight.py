@@ -1,5 +1,8 @@
 from abc import ABCMeta
-from typing import Any
+from typing import TypeVar, cast
+
+R = TypeVar("R")
+CacheKey = tuple[tuple[object, ...], frozenset[tuple[str, object]]]
 
 
 class FlyweightMeta(ABCMeta):
@@ -13,11 +16,13 @@ class FlyweightMeta(ABCMeta):
     base or carry abstract methods.
     """
 
-    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
-        cache: dict[tuple[Any, ...], Any] = cls.__dict__.get("flyweights", {})
+    # `cls: type[R]` makes `Node(...)` return `Node`; construction args stay `object` because
+    # one metaclass serves every class, each with its own `__init__` signature.
+    def __call__(cls: type[R], *args: object, **kwargs: object) -> R:
+        cache: dict[CacheKey, object] = cls.__dict__.get("flyweights", {})
         if "flyweights" not in cls.__dict__:
             cls.flyweights = cache
         key = (args, frozenset(kwargs.items()))
         if key not in cache:
-            cache[key] = super().__call__(*args, **kwargs)
-        return cache[key]
+            cache[key] = type.__call__(cls, *args, **kwargs)
+        return cast(R, cache[key])

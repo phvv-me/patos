@@ -7,8 +7,8 @@ copyright: Apache-2.0 - Pedro Valois
 
 theme:
   name: material
-  logo: assets/logo.svg
-  favicon: assets/favicon.svg
+  logo: assets/icon.svg
+  favicon: assets/icon.svg
   font:
     text: Space Grotesk
     code: JetBrains Mono
@@ -44,7 +44,8 @@ theme:
     - toc.follow
 
 extra_css:
-  - stylesheets/extra.css
+  - stylesheets/base.css
+  - stylesheets/brand.css
 
 nav:
   - Home: index.md
@@ -84,23 +85,8 @@ markdown_extensions:
         - packages/patos
       check_paths: true
 
+hooks:
+  - docs/hooks/llms.py
+
 plugins:
   - search
-  - llmstxt:
-      markdown_description: Typed Python design and dispatch patterns, pip one in or copy one in and own the file
-      full_output: llms-full.txt
-      sections:
-        Usage:
-          - index.md
-        Creational:
-          - patos/singleton.md
-          - patos/flyweight.md
-        Dispatch & selection:
-          - patos/registry.md
-          - patos/strategy.md
-          - patos/dispatch.md
-        Command-line:
-          - patos/strflag.md
-        Reference:
-          - api.md
-          - release.md

@@ -1,4 +1,7 @@
-from typing import Any, ClassVar
+from typing import ClassVar, ParamSpec, TypeVar, cast
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class SingletonMeta(type):
@@ -9,12 +12,14 @@ class SingletonMeta(type):
     keeps its own instance, so subclasses are independent singletons.
     """
 
-    instances: ClassVar[dict[type, Any]] = {}
+    instances: ClassVar[dict[type, object]] = {}
 
-    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
+    # `cls: type[R]` makes `Counter()` return `Counter`; construction args stay `object`
+    # because one metaclass serves every class, each with its own `__init__` signature.
+    def __call__(cls: type[R], *args: object, **kwargs: object) -> R:
         if cls not in SingletonMeta.instances:
-            SingletonMeta.instances[cls] = super().__call__(*args, **kwargs)
-        return SingletonMeta.instances[cls]
+            SingletonMeta.instances[cls] = type.__call__(cls, *args, **kwargs)
+        return cast(R, SingletonMeta.instances[cls])
 
 
 class Singleton(metaclass=SingletonMeta):

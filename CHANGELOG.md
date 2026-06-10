@@ -4,6 +4,14 @@ All notable changes to patos are documented here.
 
 The format follows Keep a Changelog, and releases are cut from the version in `pyproject.toml`.
 
+## 0.0.5
+
+### Changed
+
+- Typing is now mypy strict with `disallow_any_explicit`, and mypy runs in CI. The pattern primitives use `ParamSpec` and `TypeVar` generics instead of `Any`, with `object` only on the genuinely variadic metaclass and registry forwarders.
+- The docs adopt the shared Open Props design language over mkdocs-material, with a legible app-icon as logo and favicon, and a working `llms.txt` from the english post-build hook.
+- CI actions updated to setup-uv v7, upload-pages-artifact v5, deploy-pages v5, and gh-release v3.
+
 ## 0.0.4
 
 ### Added

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "patos"
-version = "0.0.4"
+version = "0.0.5"
 description = "Typed Python design and dispatch patterns, pip one in or copy one in and own the file"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = [
   "hypothesis>=6",
+  "mypy>=1.11",
   "pyrefly>=1",
   "pytest>=9",
   "pytest-cov>=5",
@@ -36,7 +37,6 @@ dev = [
 ]
 docs = [
   "mkdocs-material>=9.5",
-  "mkdocs-llmstxt>=0.2",
 ]
 
 [project.urls]
@@ -58,7 +58,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+disallow_any_explicit = true
 files = ["src"]
+mypy_path = "src"
 
 [tool.pytest.ini_options]
 addopts = "-q -ra --strict-markers"

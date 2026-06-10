@@ -3,10 +3,13 @@ from __future__ import annotations
 import functools
 from collections.abc import Callable, Hashable
 from types import MappingProxyType
-from typing import Any
+from typing import Generic, ParamSpec, TypeVar, cast
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
-class value_dispatch:
+class value_dispatch(Generic[P, R]):
     """Turn a function into a value-dispatched generic.
 
     Like `functools.singledispatch`, but the dispatch key is the *value* of a
@@ -30,22 +33,22 @@ class value_dispatch:
 
     def __init__(
         self,
-        fallback: Callable[..., Any] | None = None,
+        fallback: Callable[P, R] | None = None,
         *,
         kind: str = "kind",
     ) -> None:
         self.kind_arg = kind
-        self.registry_map: dict[Hashable, Callable[..., Any]] = {}
-        self.fallback: Callable[..., Any] | None = None
+        self.registry_map: dict[Hashable, Callable[P, R]] = {}
+        self.fallback: Callable[P, R] | None = None
         if fallback is not None:
             self.bind_fallback(fallback)
 
-    def bind_fallback(self, fallback: Callable[..., Any]) -> None:
+    def bind_fallback(self, fallback: Callable[P, R]) -> None:
         """Adopt `fallback` as the default impl and copy its metadata onto self."""
         self.fallback = fallback
         functools.update_wrapper(self, fallback)
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """Bind the fallback on the parametrised first call, otherwise dispatch.
 
         With no fallback yet, this is the parametrised-decorator stage: the sole
@@ -53,8 +56,11 @@ class value_dispatch:
         route to its registered impl, falling back when the kind is absent.
         """
         if self.fallback is None:
-            self.bind_fallback(args[0])
-            return self
+            self.bind_fallback(cast("Callable[P, R]", args[0]))
+            # The parametrised form `@value_dispatch(kind=...)` then `@dispatcher` returns
+            # the dispatcher itself, so this branch yields self rather than an `R`. The cast
+            # keeps both decorator stages behind one `__call__` without splitting the API.
+            return cast(R, self)
         value = kwargs.pop(self.kind_arg, None)
         if value is None:
             return self.fallback(*args, **kwargs)
@@ -69,10 +75,10 @@ class value_dispatch:
 
     def register(
         self,
-        arg: Hashable | Callable[..., Any] | None = None,
+        arg: Hashable | Callable[P, R] | None = None,
         *,
         name: Hashable | None = None,
-    ) -> Callable[..., Any] | Callable[[Callable[..., Any]], Callable[..., Any]]:
+    ) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
         """Register an implementation under a kind value.
 
         Three forms:
@@ -90,12 +96,12 @@ class value_dispatch:
             return self.bind(arg, arg.__name__ if name is None else name)
         key = arg if name is None else name
 
-        def decorate(impl: Callable[..., Any]) -> Callable[..., Any]:
+        def decorate(impl: Callable[P, R]) -> Callable[P, R]:
             return self.bind(impl, impl.__name__ if key is None else key)
 
         return decorate
 
-    def bind(self, impl: Callable[..., Any], key: Hashable) -> Callable[..., Any]:
+    def bind(self, impl: Callable[P, R], key: Hashable) -> Callable[P, R]:
         """Store `impl` under `key`, also exposing it as an attribute when key is an identifier."""
         self.registry_map[key] = impl
         if isinstance(key, str) and key.isidentifier():
@@ -103,7 +109,7 @@ class value_dispatch:
         return impl
 
     @property
-    def registry(self) -> MappingProxyType[Hashable, Callable[..., Any]]:
+    def registry(self) -> MappingProxyType[Hashable, Callable[P, R]]:
         """Read-only view of the kind to impl mapping."""
         return MappingProxyType(self.registry_map)
 

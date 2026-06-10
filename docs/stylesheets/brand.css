@@ -1,0 +1,79 @@
+/* patos accent: a duck-amber flock on a pond-teal accent. Loads after
+   base.css, sets the --brand-* hooks and a few patos-only landing rules. */
+
+:root {
+  --brand-primary: #d97706;       /* duck amber, the primary header */
+  --brand-primary-dark: #b45309;
+  --brand-accent: #0d9488;        /* pond teal, links and active state */
+}
+
+/* dark scheme lifts the pond accent so it reads on slate */
+[data-md-color-scheme="slate"] {
+  --brand-accent: #2dd4bf;
+}
+
+/* landing hero */
+.hero {
+  text-align: center;
+  padding: 1.4rem 0 1.2rem;
+}
+
+.hero .hero-banner {
+  display: block;
+  width: min(100%, 880px);
+  margin: 0 auto 1.4rem;
+  border-radius: var(--radius-4);
+  box-shadow: var(--shadow-5);
+}
+
+.hero .tagline {
+  font-size: 1.18rem;
+  line-height: 1.5;
+  color: var(--md-default-fg-color--light);
+  max-width: 42rem;
+  margin: 0 auto 1.4rem;
+}
+
+/* hide the auto-rendered h1 on the landing page, the banner is the title */
+.hero + h1,
+.md-typeset .hero ~ h1:first-of-type {
+  display: none;
+}
+
+.hero .md-button {
+  margin: 0.2rem 0.3rem;
+  border-radius: var(--radius-round);
+  font-weight: 600;
+}
+
+/* two-ways panels */
+.md-typeset .ways {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.1rem;
+  margin: 1rem 0 0.5rem;
+}
+
+.md-typeset .way {
+  padding: 1.2rem 1.3rem;
+  border: var(--border-size-1) solid var(--md-default-fg-color--lightest);
+  border-radius: var(--radius-3);
+  background: color-mix(in srgb, var(--brand-accent) 5%, transparent);
+}
+
+.md-typeset .way > p:first-child {
+  margin-top: 0;
+}
+
+/* a small pill used for the two-ways callouts */
+.md-typeset .pill {
+  display: inline-block;
+  padding: 0.18em 0.7em;
+  border-radius: var(--radius-round);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: var(--md-accent-fg-color--transparent);
+  color: var(--md-accent-fg-color);
+}

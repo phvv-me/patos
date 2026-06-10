@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, Self, cast
+from typing import ClassVar, Self, cast
 
 
 class Registry:
@@ -13,7 +13,7 @@ class Registry:
 
     registry_entries: ClassVar[list[type["Registry"]]]
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
+    def __init_subclass__(cls, **kwargs: object) -> None:
         """Register `cls` as a root (if a direct child) and into its nearest root."""
         super().__init_subclass__(**kwargs)
 
@@ -77,7 +77,7 @@ class Registry:
             ) from None
 
     @classmethod
-    def dispatch(cls, *args: Any, **kwargs: Any) -> Self:
+    def dispatch(cls, *args: object, **kwargs: object) -> Self:
         """Try each registered implementation's `from_dispatch`, returning the first success.
 
         On a registry root, every concrete implementation is tried in order and the last raised
@@ -98,6 +98,6 @@ class Registry:
         raise RuntimeError(f"No implementation found in {cls.__name__} registry.")
 
     @classmethod
-    def from_dispatch(cls, *args: Any, **kwargs: Any) -> Self:
+    def from_dispatch(cls, *args: object, **kwargs: object) -> Self:
         """Build an instance from dispatch arguments; subclasses override this."""
         raise NotImplementedError(f"{cls.__name__} does not implement from_dispatch.")

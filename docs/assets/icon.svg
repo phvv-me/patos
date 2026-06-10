@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="patos">
+  <title>patos</title>
+  <defs>
+    <linearGradient id="pond" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#pond)"/>
+  <g fill="#fcd34d">
+    <ellipse cx="29" cy="39" rx="17" ry="12.5"/>
+    <path d="M13 36 q-6 -1 -7 -6 q6 -2 10 2 Z"/>
+    <circle cx="42" cy="27" r="10.5"/>
+  </g>
+  <path d="M52 25 q9 0 9 4.5 q0 4.5 -9 4.5 q-2.5 -4.5 0 -9 Z" fill="#fb923c"/>
+  <circle cx="45.5" cy="24.5" r="2.1" fill="#0f3b38"/>
+</svg>
