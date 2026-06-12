@@ -1,4 +1,7 @@
+import re
 from typing import ClassVar, Self, cast
+
+CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 class Registry:
@@ -12,15 +15,20 @@ class Registry:
     """
 
     registry_entries: ClassVar[list[type["Registry"]]]
+    name: ClassVar[str]  # auto-derived kebab-case of the class name unless declared
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Register `cls` as a root (if a direct child) and into every root it inherits.
 
         A class deriving from two registry roots enrolls in both, so each root's
-        `registry()` sees it.
+        `registry()` sees it. Every subclass also receives an auto-derived kebab-case
+        `name` from its class name (`OpusFB8` becomes `opus-fb8`) unless the class body
+        declares one itself.
         """
         super().__init_subclass__(**kwargs)
 
+        if "name" not in cls.__dict__ and "name" not in cls.__annotations__:
+            cls.name = CAMEL_BOUNDARY.sub("-", cls.__name__).lower()
         if Registry in cls.__bases__:
             cls.registry_entries = []
         for base in cls.__mro__:

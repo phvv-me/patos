@@ -237,3 +237,25 @@ def test_flyweight_caches_are_per_class() -> None:
 
     assert A() is A()
     assert A() is not B()
+
+
+def test_registry_auto_derives_kebab_name_unless_declared() -> None:
+    """`name` falls out of the class name, and an explicit declaration always wins."""
+
+    class AudioCodec(Registry):
+        pass
+
+    class OpusFB8(AudioCodec):
+        pass
+
+    class FancyCodec(AudioCodec):
+        name = "fancy"
+
+    class Annotated(AudioCodec):
+        name: str = "declared"
+
+    assert AudioCodec.name == "audio-codec"
+    assert OpusFB8.name == "opus-fb8"
+    assert FancyCodec.name == "fancy"
+    assert Annotated.name == "declared"
+    assert AudioCodec.find("opus-fb8") is OpusFB8
