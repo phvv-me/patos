@@ -4,7 +4,7 @@ import functools
 import inspect
 from collections.abc import Callable, Hashable
 from types import MappingProxyType
-from typing import Generic, ParamSpec, TypeGuard, TypeVar, cast
+from typing import Generic, ParamSpec, TypeGuard, TypeVar, cast, overload
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -89,6 +89,14 @@ class value_dispatch(Generic[P, R]):
                 f"choose from {sorted(self.registry_map, key=repr)}",
             ) from None
         return impl(*args, **kwargs)
+
+    @overload
+    def register(self, arg: Callable[P, R], *, name: Hashable | None = None) -> Callable[P, R]: ...
+
+    @overload
+    def register(
+        self, arg: Hashable | None = None, *, name: Hashable | None = None
+    ) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
 
     def register(
         self,
