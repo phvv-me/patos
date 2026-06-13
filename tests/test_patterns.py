@@ -41,6 +41,15 @@ def test_registry_implementations_excludes_root_and_abstract_bases(
     assert set(impls) < set(codec_root.registry())
 
 
+def test_registry_names_lists_implementation_keys(
+    codec_root: type[Registry],
+    codec_impls: tuple[type[Registry], type[Registry]],
+) -> None:
+    """`names()` returns every concrete implementation's `name`, the keys `find` accepts."""
+    assert sorted(codec_root.names()) == sorted(impl.name for impl in codec_impls)
+    assert all(codec_root.find(name) in codec_impls for name in codec_root.names())
+
+
 def test_registry_find_by_name_and_clear_error_on_miss(
     codec_root: type[Registry],
     codec_impls: tuple[type[Registry], type[Registry]],

@@ -69,6 +69,16 @@ class Registry:
         ]
 
     @classmethod
+    def names(cls) -> list[str]:
+        """The `name` key of every concrete implementation, the keys `find` accepts.
+
+        The companion to `implementations()` for the common `[impl.name for impl in
+        Base.implementations()]` listing, so callers enumerate the registry's keys without
+        reaching through each class.
+        """
+        return [impl.name for impl in cls.implementations()]
+
+    @classmethod
     def find(cls, name: str, *, attr: str = "name") -> type[Self]:
         """Return the concrete implementation whose own `attr` equals `name`.
 
