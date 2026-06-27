@@ -5,6 +5,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from patos import FlyweightMeta, Registry, Singleton
+from patos.registry import CAMEL_BOUNDARY
 
 
 def test_registry_roots_and_membership() -> None:
@@ -39,6 +40,29 @@ def test_registry_implementations_excludes_root_and_abstract_bases(
     assert codec_root.root() is codec_root
     assert all(not c.__abstractmethods__ for c in impls)
     assert set(impls) < set(codec_root.registry())
+
+
+def test_registry_implementations_exclude_pydantic_generic_aliases() -> None:
+    """A concrete subclass that pins a generic base's type parameter adds no alias implementation.
+
+    Subclassing a generic `Component` under PEP 695 makes pydantic materialize an intermediate
+    parametrization class (`Combinator[Tensor]`) that enrolls in the registry under a bracketed
+    name. Those aliases are typing artifacts of their origin, not separate providers, so
+    `implementations`, `names` and `find` see only the genuine concrete subclass.
+    """
+    from patos import Component
+
+    class Combinator[C](Component):
+        inner: object
+
+    class Wrap(Combinator[int]):
+        pass
+
+    impls = Combinator.implementations()
+    assert Wrap in impls
+    assert all("[" not in impl.name for impl in impls)
+    assert "combinator[int]" not in Combinator.names()
+    assert Combinator.find("wrap") is Wrap
 
 
 def test_registry_names_lists_implementation_keys(
@@ -132,6 +156,40 @@ def test_registry_class_under_two_roots_enrolls_in_both() -> None:
     assert Writer.registry() == [Writer, File]
 
 
+def test_registry_implementations_are_scoped_to_the_calling_subtree() -> None:
+    """Two sibling hierarchies sharing one root each see only their own implementations.
+
+    The codec `Quantizer` and the `Lattice` oracle both enroll under one `Component` root, so the
+    shared registry list holds both. `Lattice.implementations()` must still list only lattices and
+    `Lattice.find` must scan only lattices, otherwise a quantizer's key (or a same-named class
+    reachable through the root under a re-importing test runner) would collide on a key the lattice
+    hierarchy never owns. The scope is the subtree of the calling class, not the whole root.
+    """
+
+    class Component(Registry):
+        pass
+
+    class Lattice(Component):
+        pass
+
+    class Quantizer(Component):
+        pass
+
+    class Leech(Lattice):
+        name = "leech"
+
+    class Trellis(Quantizer):
+        name = "trellis"
+
+    assert Lattice.root() is Quantizer.root() is Component
+    assert Leech in Component.registry() and Trellis in Component.registry()
+    assert Lattice.implementations() == [Leech]
+    assert Quantizer.implementations() == [Trellis]
+    assert Lattice.find("leech") is Leech
+    with pytest.raises(KeyError):
+        Lattice.find("trellis")  # the sibling quantizer's key is invisible to the lattice subtree
+
+
 def test_registry_find_ignores_inherited_keys_and_rejects_duplicates() -> None:
     """find matches own attributes only and raises when two impls share a key."""
 
@@ -171,6 +229,164 @@ def test_registry_default_from_dispatch_not_implemented() -> None:
 
     with pytest.raises(NotImplementedError, match="from_dispatch"):
         Plain.from_dispatch()
+
+
+# Each word is two or more lowercase letters so its capitalised form is one capital over a
+# lowercase run, never a single letter that would read as an acronym and fuse with its neighbour.
+words = st.text("abcdefghijklmnopqrstuvwxyz", min_size=2, max_size=6)
+
+
+@given(parts=st.lists(words.map(str.capitalize), min_size=1, max_size=5))
+def test_registry_kebab_derivation_round_trips(parts: list[str]) -> None:
+    """A PascalCase join of lowercase words derives to those words joined by hyphens.
+
+    Each segment starts with one capital over a lowercase run, so the only camel
+    boundaries are between segments, giving a clean structural property: the derived
+    key is exactly the lowercased words joined by `-`, with no stray, leading or
+    trailing hyphens, and the class is findable under it.
+    """
+    pascal = "".join(parts)
+    expected = "-".join(part.lower() for part in parts)
+
+    class Base(Registry):
+        pass
+
+    impl = type(pascal, (Base,), {})
+
+    assert impl.name == expected
+    assert impl.name.strip("-") == impl.name
+    assert "--" not in impl.name
+    assert Base.find(expected) is impl
+    assert set(Base.names()) == {expected}
+
+
+def test_registry_kebab_keeps_acronym_with_digit_whole_and_round_trips() -> None:
+    """A pure acronym stays one segment whether or not it carries a digit, and the key is stable.
+
+    Before the fix the `[a-z0-9]` word-end class let a digit inside an acronym split off its
+    trailing capital, so the real codec `E8P` derived to `e8-p` (and `RVQ`/`MOE` were only spared
+    because they carry no digit). The key was then neither readable nor a fixed point: re-deriving
+    its PascalCase form gave a different string. A capital that begins a lowercase *word* still
+    splits, so `E8Lattice` keeps its boundary.
+    """
+
+    class Codec(Registry):
+        pass
+
+    class RVQ(Codec):
+        pass
+
+    class MOE(Codec):
+        pass
+
+    class E8P(Codec):
+        pass
+
+    class E8Lattice(Codec):
+        pass
+
+    assert (RVQ.name, MOE.name, E8P.name) == ("rvq", "moe", "e8p")
+    assert E8Lattice.name == "e8-lattice"
+    for impl in (RVQ, MOE, E8P, E8Lattice):
+        assert Codec.find(impl.name) is impl
+        # idempotency is the round-trip property: deriving an already-kebab name is a no-op
+        rebuilt = "".join(part.capitalize() for part in impl.name.split("-"))
+        assert CAMEL_BOUNDARY.sub("-", impl.name).lower() == impl.name
+        assert CAMEL_BOUNDARY.sub("-", rebuilt).lower() == impl.name
+
+
+def test_registry_select_filters_implementations_in_registration_order() -> None:
+    """`select(predicate)` keeps the matching concrete impls, in registration order."""
+
+    class Engine(Registry):
+        capability = "base"
+
+    class Evaluate(Engine):
+        capability = "evaluate"
+
+    class Factor(Engine):
+        capability = "factor"
+
+    class AlsoEvaluate(Engine):
+        capability = "evaluate"
+
+    evaluators = Engine.select(lambda impl: impl.capability == "evaluate")
+    assert evaluators == [Evaluate, AlsoEvaluate]
+    assert Engine.select(lambda impl: impl.capability == "factor") == [Factor]
+    assert Engine.select(lambda impl: False) == []
+
+
+def test_registry_first_available_picks_first_passing_probe() -> None:
+    """`first_available` returns the first impl whose `is_available` classmethod is true."""
+
+    class Backend(Registry):
+        @classmethod
+        def is_available(cls) -> bool:
+            return False
+
+    class Off(Backend):
+        @classmethod
+        def is_available(cls) -> bool:
+            return False
+
+    class On(Backend):
+        @classmethod
+        def is_available(cls) -> bool:
+            return True
+
+    class AlsoOn(Backend):
+        @classmethod
+        def is_available(cls) -> bool:
+            return True
+
+    assert Backend.first_available() is On
+    assert Backend.first_available(lambda impl: impl is AlsoOn) is AlsoOn
+
+
+def test_registry_first_available_treats_unprobed_impls_as_available() -> None:
+    """An impl exposing no availability probe counts as available, so a plain last one wins."""
+
+    class Backend(Registry):
+        pass
+
+    class Plain(Backend):
+        pass
+
+    assert Backend.first_available() is Plain
+
+
+def test_registry_first_available_reads_available_method_and_raises_on_none() -> None:
+    """The default probe also reads an `available` classmethod, and none available raises."""
+
+    class Backend(Registry):
+        pass
+
+    class Never(Backend):
+        @classmethod
+        def available(cls) -> bool:
+            return False
+
+    with pytest.raises(LookupError, match="no available implementation"):
+        Backend.first_available()
+
+
+def test_registry_find_skips_impl_missing_the_custom_attribute() -> None:
+    """`find` on a custom attribute ignores an impl that does not declare it on itself."""
+
+    class Driver(Registry):
+        pass
+
+    class Http(Driver):
+        scheme = "http"
+
+    class Plain(Driver):
+        pass  # no `scheme` of its own, so it never answers a scheme lookup
+
+    assert Driver.find("http", attr="scheme") is Http
+    assert Plain in Driver.implementations()
+    with pytest.raises(KeyError) as miss:
+        Driver.find("file", attr="scheme")
+    assert "scheme='file'" in miss.value.args[0]
 
 
 def test_singleton_one_instance_init_runs_once() -> None:
@@ -248,6 +464,36 @@ def test_flyweight_caches_are_per_class() -> None:
     assert A() is not B()
 
 
+def test_flyweight_survives_uncomparable_args() -> None:
+    """An argument whose ``bool(a == b)`` raises (a tensor) never crashes the cache lookup.
+
+    A pydantic model carrying tensors reduces a tensor to a bool in its ``==`` and raises; two
+    equal-but-distinct such arguments hash-collide, so a plain ``(type, value)`` key would raise
+    resolving the collision. The flyweight keys by identity first, then a guarded compare, so it
+    interns a reused object and degrades to per-object for an uncomparable one, never raising.
+    """
+
+    class Tensorish:
+        def __init__(self, items: tuple[int, ...]) -> None:
+            self.items = items
+
+        def __hash__(self) -> int:
+            return hash(self.items)  # equal items collide, forcing the lookup to compare
+
+        def __eq__(self, other: object) -> bool:
+            raise RuntimeError("ambiguous: equality is a vector, not a bool")
+
+    class Node(metaclass=FlyweightMeta):
+        def __init__(self, code: Tensorish) -> None:
+            self.code = code
+
+    shared = Tensorish((1, 2, 3))
+    assert Node(shared) is Node(shared)  # the same object interns by identity, no compare
+    first, second = Tensorish((4, 5)), Tensorish((4, 5))  # equal, distinct, hash-colliding
+    assert Node(first) is not Node(second)  # uncomparable args degrade to per-object, no crash
+    assert Node(first) is Node(first)  # each still interns by its own object
+
+
 def test_registry_auto_derives_kebab_name_unless_declared() -> None:
     """`name` falls out of the class name, and an explicit declaration always wins."""
 
@@ -268,3 +514,51 @@ def test_registry_auto_derives_kebab_name_unless_declared() -> None:
     assert FancyCodec.name == "fancy"
     assert Annotated.name == "declared"
     assert AudioCodec.find("opus-fb8") is OpusFB8
+
+
+def test_registry_kebab_splits_embedded_acronyms() -> None:
+    """An acronym run keeps its own segment instead of fusing into the next word.
+
+    Before the fix `HTTPServer` derived to `httpserver` (no split at the acronym
+    boundary), so an acronym-bearing class got an unreadable key that also collided
+    with neither its camelCased twin nor `find`'s expectations.
+    """
+
+    class Codec(Registry):
+        pass
+
+    class HTTPServer(Codec):
+        pass
+
+    class XMLHttpRequest(Codec):
+        pass
+
+    class ParseURLToJSON(Codec):
+        pass
+
+    class IOError(Codec):
+        pass
+
+    assert HTTPServer.name == "http-server"
+    assert XMLHttpRequest.name == "xml-http-request"
+    assert ParseURLToJSON.name == "parse-url-to-json"
+    assert IOError.name == "io-error"
+    assert Codec.find("http-server") is HTTPServer
+
+
+def test_registry_bare_annotation_does_not_suppress_derivation() -> None:
+    """A bare `name: str` annotation (no value) still gets an auto-derived key.
+
+    Before the fix the annotation suppressed derivation without assigning anything,
+    so the subclass silently inherited the root's key and answered for the wrong name.
+    """
+
+    class Base(Registry):
+        pass
+
+    class Worker(Base):
+        name: str
+
+    assert Worker.name == "worker"
+    assert Base.find("worker") is Worker
+    assert "base" not in Base.names()

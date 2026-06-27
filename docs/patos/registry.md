@@ -72,6 +72,8 @@ Loader.find("toml")         # KeyError listing the known names
 - `Registry.registry()`. List every enrolled class, the root included, owned by this class's nearest root.
 - `Registry.implementations()`. The concrete enrolled classes, dropping the root itself and any abstract bases. The view to fan out over real providers.
 - `Registry.find(name, attr="name")`. Return the implementation whose own `attr` equals `name`, raising a clear `KeyError` listing the known keys when missing and a `ValueError` on duplicate keys.
+- `Registry.select(predicate)`. The concrete implementations satisfying `predicate`, in registration order, replacing the hand-rolled `[impl for impl in implementations() if ...]` filter.
+- `Registry.first_available(probe=available)`. The first implementation whose availability `probe` passes, raising a `LookupError` on none. The default probe reads an `available()` / `is_available()` method, counting a class without one as always available.
 - `Registry.root()`. The registry root that owns this class's implementation list.
 - `Registry.is_registry_root()`. Whether this class owns a registry.
 - `Registry.dispatch(*args, **kwargs)`. Try each implementation's `from_dispatch` and return the first success, raising every refusal together as an `ExceptionGroup` if all fail.

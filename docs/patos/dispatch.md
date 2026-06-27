@@ -58,6 +58,42 @@ def emit(node: str, **kw: object) -> str: ...
 - `.kinds()`. All registered kinds, sorted by `repr`.
 - `key in dispatcher`. Membership test on registered kinds.
 
+### type_dispatch
+
+The dual that keys on the *type* of the first positional argument rather than a keyword value,
+the open-type-ladder replacement for an `if isinstance(x, A): ... elif isinstance(x, B): ...`
+chain. Like `functools.singledispatch` but with the same registration ergonomics as
+`value_dispatch`.
+
+```python
+from patos import type_dispatch
+
+
+@type_dispatch
+def render(node):
+    return "unknown"
+
+
+@render.register
+def _(node: Circle):       # type read from the first parameter's annotation
+    return "circle"
+
+
+@render.register(Square)   # or given explicitly
+def _(node):
+    return "square"
+
+
+render(Circle())           # "circle"
+render(object())           # "unknown" -- unmatched type falls back
+```
+
+- `type_dispatch`. Decorator. Works bare (`@type_dispatch`) or parametrized (`@type_dispatch()`).
+- `.register(type=None)`. Register an implementation, bare for the first parameter's annotation, or with an explicit type. A call resolves the argument's type against the registry by walking its MRO, so the most specific registered base wins.
+- `.registry`. Read-only view of the type to implementation mapping.
+- `.types()`. All registered types, sorted by name.
+- `cls in dispatcher`. Membership test on registered types.
+
 ## Source
 
 Copy this into your project and own it. No dependency, no tool, just one module you can read and change.

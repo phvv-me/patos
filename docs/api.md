@@ -10,6 +10,11 @@ from patos import (
     Registry,
     Strategy,
     value_dispatch,
+    type_dispatch,
+    Decorator,
+    Pipeline,
+    Lifecycle,
+    DerivedCache,
     StrFlag,
 )
 ```
@@ -42,9 +47,18 @@ into your own project. No dependency, no version pin, no tool, just one module y
 
 | pato | exports | what it does |
 |---|---|---|
-| [registry](patos/registry.md) | `Registry` | self-registering class hierarchies via `__init_subclass__`, with try-each `dispatch` |
+| [registry](patos/registry.md) | `Registry` | self-registering class hierarchies via `__init_subclass__`, with `dispatch`, `select` and `first_available` |
 | [strategy](patos/strategy.md) | `Strategy` | a named family of interchangeable implementations, with `first_available()` |
-| [dispatch](patos/dispatch.md) | `value_dispatch` | dispatch on a value the way `singledispatch` dispatches on a type |
+| [dispatch](patos/dispatch.md) | `value_dispatch`, `type_dispatch` | dispatch on a value, or on the first argument's type the way `singledispatch` does |
+
+### Structural & lifecycle
+
+| pato | exports | what it does |
+|---|---|---|
+| [decorator](patos/decorator.md) | `Decorator` | a transparent wrapper forwarding everything to the wrapped object but its overrides |
+| [pipeline](patos/pipeline.md) | `Pipeline`, `Reversible` | a reversible stack of stages, applied forward and unwound in reverse |
+| [lifecycle](patos/lifecycle.md) | `Lifecycle`, `IllegalTransition` | a typed state machine that permits only the transitions it declares |
+| [cache](patos/cache.md) | `DerivedCache` | a load-once cache of a derived value keyed by exactly what it depends on |
 
 ### Command-line
 

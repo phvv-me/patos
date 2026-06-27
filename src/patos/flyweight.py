@@ -2,10 +2,42 @@ from abc import ABCMeta
 from typing import TypeVar, cast
 
 R = TypeVar("R")
-CacheKey = tuple[
-    tuple[tuple[type[object], object], ...],
-    frozenset[tuple[str, type[object], object]],
-]
+
+
+class Arg:
+    """One flyweight key element: hashes by its argument and compares without a tensor `__eq__`.
+
+    The flyweight interns by argument value, but an argument whose `==` does not return a plain
+    `bool` -- a pydantic model carrying tensors reduces a tensor to a bool and raises, a raw tensor
+    returns an elementwise mask -- cannot key a plain `dict`, whose lookup would raise on the
+    collision compare. Resolving a hash collision by identity first, then a guarded value compare
+    that treats an unresolvable equality as distinct, keeps interning exact for well-behaved
+    arguments and degrades to per-object for one whose equality is undefined, never crashing.
+    Typing stays like `lru_cache(typed=True)`: the argument's type joins the hash and gates the
+    compare, so `Arg(1)`, `Arg(True)` and `Arg(1.0)` are distinct keys.
+    """
+
+    __slots__ = ("kind", "value")
+
+    def __init__(self, value: object) -> None:
+        self.kind = type(value)
+        self.value = value
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.value))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Arg) or self.kind is not other.kind:
+            return False
+        if self.value is other.value:
+            return True
+        try:
+            return bool(self.value == other.value)
+        except (RuntimeError, ValueError, TypeError):
+            return False
+
+
+CacheKey = tuple[tuple[Arg, ...], frozenset[tuple[str, Arg]]]
 
 
 class FlyweightMeta(ABCMeta):
@@ -28,8 +60,8 @@ class FlyweightMeta(ABCMeta):
         if "flyweights" not in cls.__dict__:
             cls.flyweights = cache
         key = (
-            tuple((type(arg), arg) for arg in args),
-            frozenset((name, type(value), value) for name, value in kwargs.items()),
+            tuple(Arg(arg) for arg in args),
+            frozenset((name, Arg(value)) for name, value in kwargs.items()),
         )
         if key not in cache:
             cache[key] = type.__call__(cls, *args, **kwargs)

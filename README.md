@@ -32,9 +32,19 @@ Or copy a single duck. Open its docs page, copy the source from the Source secti
 
 | pato | description | docs |
 |---|---|---|
-| `Registry` | self-registering class hierarchies via `__init_subclass__`, with try-each `dispatch` | [docs](https://phvv.me/patos/patos/registry/) |
+| `Registry` | self-registering class hierarchies via `__init_subclass__`, with try-each `dispatch`, `select(predicate)` and `first_available()` | [docs](https://phvv.me/patos/patos/registry/) |
 | `Strategy` | a named family of interchangeable implementations, with `first_available()` | [docs](https://phvv.me/patos/patos/strategy/) |
 | `value_dispatch` | dispatch on a value the way `singledispatch` dispatches on a type | [docs](https://phvv.me/patos/patos/dispatch/) |
+| `type_dispatch` | dispatch on the first argument's type, the open-type-ladder dual of `value_dispatch` | [docs](https://phvv.me/patos/patos/dispatch/) |
+
+### Structural & lifecycle
+
+| pato | description | docs |
+|---|---|---|
+| `Decorator` | a transparent wrapper that forwards everything to the wrapped object but what it overrides | [docs](https://phvv.me/patos/patos/decorator/) |
+| `Pipeline` | a reversible stack of stages, applied forward and unwound in reverse around a core op | [docs](https://phvv.me/patos/patos/pipeline/) |
+| `Lifecycle` | a typed state machine that permits only the transitions its table declares | [docs](https://phvv.me/patos/patos/lifecycle/) |
+| `DerivedCache` | a load-once cache of a derived value keyed by exactly what it depends on | [docs](https://phvv.me/patos/patos/cache/) |
 
 ### Command-line
 

@@ -1,7 +1,50 @@
 import re
+from collections.abc import Callable
 from typing import ClassVar, Self, cast
 
-CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# Split a camel name only where a new *word* starts: at a lowercase run meeting an upper
+# (`opusFb8` -> `opus-fb8`), and before a capitalised word however its left neighbour reads, so
+# both an acronym run (`HTTPServer` -> `http-server`) and a digit run (`E8Lattice` -> `e8-lattice`)
+# cut before the word. A bare capital that merely ends an acronym token never starts a word, so a
+# pure acronym keeps one segment whether or not it carries a digit (`RVQ` -> `rvq`, `E8P` ->
+# `e8p`), which is what makes the kebab key idempotent and the find round-trip stable.
+CAMEL_BOUNDARY = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[a-zA-Z0-9])(?=[A-Z][a-z])")
+
+
+def generic_alias(impl: type) -> bool:
+    """Whether `impl` is a pydantic generic parametrization, not a distinct implementation.
+
+    Subclassing a generic model under PEP 695 (`class Sub[C](Base[C])`) makes pydantic
+    materialize one intermediate class per concrete parametrization a subclass pins
+    (`Base[Tensor]`, `Base[tuple[Tensor, C]]`), and each trips `__init_subclass__` and enrolls
+    in the registry under a bracketed kebab name (`base[tensor]`). Those aliases are typing
+    artifacts of their `origin` class, never separate providers, so `implementations()` drops
+    them. The signal is pydantic's own `__pydantic_generic_metadata__["origin"]`, which the alias
+    carries and the real concrete class leaves `None`; a non-pydantic class has no such attribute
+    and is kept. This keeps `names()` and `find` to the genuine implementations.
+
+    impl: the registry member being classified.
+    """
+    return getattr(impl, "__pydantic_generic_metadata__", {}).get("origin") is not None
+
+
+def available(impl: type) -> bool:
+    """Whether an implementation *class* reports itself runnable on this host.
+
+    The default availability probe `Registry.first_available` walks with. It reads a class-level
+    `is_available()` (mainboard's tracer convention) or, failing that, an `available()` the class
+    exposes (a classmethod or staticmethod), calling whichever it finds. A class declaring neither
+    is treated as always available, so a plain fallback needs no boilerplate to be the catch-all.
+    A bound instance method (atpx's `Engine.available(self)`) is not callable on the bare class, so
+    such a consumer passes its own `probe` to `first_available` instead of relying on this default.
+
+    impl: the implementation class being probed.
+    """
+    for name in ("is_available", "available"):
+        candidate = getattr(impl, name, None)
+        if callable(candidate):
+            return bool(candidate())
+    return True
 
 
 class Registry:
@@ -27,7 +70,7 @@ class Registry:
         """
         super().__init_subclass__(**kwargs)
 
-        if "name" not in cls.__dict__ and "name" not in cls.__annotations__:
+        if "name" not in cls.__dict__:
             cls.name = CAMEL_BOUNDARY.sub("-", cls.__name__).lower()
         if Registry in cls.__bases__:
             cls.registry_entries = []
@@ -55,17 +98,26 @@ class Registry:
 
     @classmethod
     def implementations(cls) -> list[type[Self]]:
-        """Concrete enrolled classes, excluding the registry root and any abstract bases.
+        """Concrete subclasses of `cls`, excluding the registry root and any abstract bases.
 
         The view consumers reach for to fan out over real providers: it drops the root itself
         and any class still carrying abstract methods, so `for impl in Base.implementations()`
         replaces the hand-rolled `for c in Base.registry() if c is not Base and ...` filter.
+
+        The view is scoped to `cls`'s own subtree, not the whole shared root: when two sibling
+        hierarchies share one registry root (the codec `Quantizer` and the `Lattice` oracle both
+        enroll under `Component`), `Lattice.implementations()` lists only lattices, never the
+        quantizers that happen to share the root. Without that scope `Lattice.find` would scan
+        every quantizer too, and two same-named classes reachable through the root (a re-imported
+        module under a test runner) would collide on a key neither hierarchy actually shares.
         """
-        root = cls.root()
         return [
             entry
             for entry in cls.registry()
-            if entry is not root and not getattr(entry, "__abstractmethods__", frozenset())
+            if entry is not cls
+            and issubclass(entry, cls)
+            and not getattr(entry, "__abstractmethods__", frozenset())
+            and not generic_alias(entry)
         ]
 
     @classmethod
@@ -110,6 +162,42 @@ class Registry:
                 f"{cls.__name__} has no implementation with {attr}={name!r}. "
                 f"Known {attr}s are {known}.",
             ) from None
+
+    @classmethod
+    def select(cls, predicate: Callable[[type[Self]], bool]) -> list[type[Self]]:
+        """Concrete implementations satisfying `predicate`, in registration (preference) order.
+
+        The typed replacement for the `[impl for impl in Base.implementations() if ...]` filter
+        that keyed registries hand-roll to fan out over a subset (engines serving one capability,
+        backends matching a vendor). The order is the registration order `implementations()`
+        already fixes, so the first match is the preferred one.
+
+        predicate: keeps an implementation when it returns true for that class.
+        """
+        return [impl for impl in cls.implementations() if predicate(impl)]
+
+    @classmethod
+    def first_available(
+        cls,
+        probe: Callable[[type[Self]], bool] = lambda impl: available(impl),
+    ) -> type[Self]:
+        """The first concrete implementation whose availability `probe` passes, raising on none.
+
+        The "pick the first thing that works" selection mainboard's tracer detect and atpx's
+        engine choice both hand-roll: walk `implementations()` in registration (preference) order
+        and return the first the host can actually run. The default `probe` reads an `available()`
+        or `is_available()` method (the `Available` convention `Strategy` shares), counting an
+        implementation without one as always available, so a plain fallback registered last is the
+        catch-all. Pass a `probe` to key availability on anything else.
+
+        probe: returns whether an implementation may be chosen on this host.
+        """
+        for impl in cls.implementations():
+            if probe(impl):
+                return impl
+        raise LookupError(
+            f"{cls.__name__} has no available implementation among {cls.names()}.",
+        )
 
     @classmethod
     def dispatch(cls, *args: object, **kwargs: object) -> Self:

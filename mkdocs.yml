@@ -57,6 +57,11 @@ nav:
           - patos/registry.md
           - patos/strategy.md
           - patos/dispatch.md
+      - Structural & lifecycle:
+          - patos/decorator.md
+          - patos/pipeline.md
+          - patos/lifecycle.md
+          - patos/cache.md
       - Command-line:
           - patos/strflag.md
   - Reference:

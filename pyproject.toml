@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "patos"
-version = "0.0.7"
+version = "0.0.8"
 description = "Typed Python design and dispatch patterns, pip one in or copy one in and own the file"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,9 +21,9 @@ classifiers = [
   "Topic :: Software Development :: Libraries",
   "Typing :: Typed",
 ]
-# Zero runtime dependencies on purpose: every pato is pure stdlib, so the whole flock
-# installs with nothing transitive, and any single pato copies cleanly into your own repo.
-dependencies = []
+# Every pure pato is stdlib and copies cleanly into your own repo. The one exception is
+# `bases`, the pydantic house models the flock shares, so pydantic is the sole runtime dep.
+dependencies = ["pydantic>=2.13.4,<3"]
 
 [project.optional-dependencies]
 dev = [

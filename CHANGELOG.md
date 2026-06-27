@@ -4,6 +4,23 @@ All notable changes to patos are documented here.
 
 The format follows Keep a Changelog, and releases are cut from the version in `pyproject.toml`.
 
+## 0.0.8
+
+### Added
+
+- `Registry.select(predicate)` returns the concrete implementations satisfying a predicate, and `Registry.first_available(probe)` returns the first whose availability probe passes, so consumers stop hand-rolling the "iterate the registry and pick" filter. The module-level `available` helper is the default probe.
+- `type_dispatch`, the dual of `value_dispatch`, dispatches on the type of the first positional argument by walking its MRO (most specific wins), the open-type-ladder replacement for an `isinstance` chain.
+- `Decorator`, a transparent delegation base that forwards every non-overridden attribute to a wrapped object, so a wrapper restates only what it changes.
+- `Pipeline` and the `Reversible` stage protocol, a reversible stack applied forward and unwound in reverse around a core operation.
+- `Lifecycle` and `IllegalTransition`, a typed state machine that permits only the transitions its table declares and raises on any other.
+- `DerivedCache`, a load-once cache of a derived value keyed by exactly the fields it depends on.
+
+### Fixed
+
+- `Registry` auto-naming now splits embedded acronyms, so `HTTPServer` derives to `http-server` and `XMLHttpRequest` to `xml-http-request` instead of fusing the acronym into the next word.
+- `Registry` auto-naming keeps a pure acronym whole even when it carries a digit, so the real codec `E8P` derives to `e8p` (not the broken `e8-p`) while a capital that begins a new word still splits (`E8Lattice` to `e8-lattice`). The derived key is now idempotent, which is what makes the `find` round-trip stable.
+- A bare `name: str` annotation on a subclass no longer suppresses kebab derivation. Earlier it skipped derivation without assigning anything, so the subclass silently inherited the root's key and answered `find` for the wrong name.
+
 ## 0.0.6
 
 ### Changed

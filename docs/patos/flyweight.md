@@ -52,7 +52,7 @@ class Shape(metaclass=FlyweightMeta):
 
 ## Public API
 
-- `FlyweightMeta`. The metaclass that performs interning. Use it as `class X(metaclass=FlyweightMeta)`. The first construction with a given `(args, kwargs)` builds and caches the instance, and every later construction with equal arguments returns that same object without re-running `__init__`. Each class keeps its own cache and arguments must be hashable. It composes with `ABCMeta`, so a flyweight can also be an abstract base class.
+- `FlyweightMeta`. The metaclass that performs interning. Use it as `class X(metaclass=FlyweightMeta)`. The first construction with a given `(args, kwargs)` builds and caches the instance, and every later construction with equal arguments returns that same object without re-running `__init__`. Each class keeps its own cache and arguments must be hashable. It composes with `ABCMeta`, so a flyweight can also be an abstract base class. An argument whose equality is not a plain `bool` (a model carrying tensors, where `a == b` reduces a tensor and raises) is interned by identity rather than value, so the same object still shares one instance while two equal-but-distinct such arguments get separate instances rather than crashing the lookup.
 
 ## Source
 
