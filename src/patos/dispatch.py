@@ -1,16 +1,11 @@
-from __future__ import annotations
-
 import functools
 import inspect
 from collections.abc import Callable, Hashable
 from types import MappingProxyType
-from typing import Generic, ParamSpec, TypeGuard, TypeVar, cast
-
-P = ParamSpec("P")
-R = TypeVar("R")
+from typing import TypeGuard, cast
 
 
-class value_dispatch(Generic[P, R]):
+class value_dispatch[**P, R]:
     """Turn a function into a value-dispatched generic.
 
     Like `functools.singledispatch`, but the dispatch key is the *value* of a
@@ -90,12 +85,12 @@ class value_dispatch(Generic[P, R]):
             ) from None
         return impl(*args, **kwargs)
 
-    def register(
+    def register[**Q](
         self,
-        arg: Hashable | Callable[P, R] | None = None,
+        arg: Hashable | Callable[Q, R] | None = None,
         *,
         name: Hashable | None = None,
-    ) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
+    ) -> Callable[Q, R] | Callable[[Callable[Q, R]], Callable[Q, R]]:
         """Register an implementation under a kind value.
 
         Three forms:
@@ -103,36 +98,43 @@ class value_dispatch(Generic[P, R]):
         - `@register("foo")` or `@register(name="foo")`: explicit key.
         - `register(existing, name="alias")`: register an existing function.
 
-        When the key is a valid identifier that does not shadow the dispatcher's own
-        API or state, the impl is also set as a dispatcher attribute, enabling direct
+        `Q` is its own type parameter, distinct from the dispatcher's `P`, because each
+        kind routinely takes its own shape (a bound `functools.partial`, an impl that
+        drops the fallback's catch-all `**kwargs`); only the return type `R` need agree.
+        `bind` is where that shape is deliberately forgotten, since dispatch keys on a
+        value at runtime rather than a type a checker can verify ahead of the call. When
+        the key is a valid identifier that does not shadow the dispatcher's own API or
+        state, the impl is also set as a dispatcher attribute, enabling direct
         `dispatcher.foo(...)` calls. Dispatch by key works either way.
 
         arg: explicit key, or the function itself in the bare/direct forms.
         name: explicit key, taking precedence over `arg` and the `__name__`.
         """
         if self.is_impl(arg):
-            return self.bind(arg, arg.__name__ if name is None else name)
+            impl = cast("Callable[Q, R]", arg)
+            return self.bind(impl, impl.__name__ if name is None else name)
         key = arg if name is None else name
 
-        def decorate(impl: Callable[P, R]) -> Callable[P, R]:
+        def decorate(impl: Callable[Q, R]) -> Callable[Q, R]:
             return self.bind(impl, self.implied_key(impl) if key is None else key)
 
         return decorate
 
-    def is_impl(self, arg: Hashable | Callable[P, R] | None) -> TypeGuard[Callable[P, R]]:
-        """Narrow a `register` argument to an implementation when it is a plain function.
+    def is_impl(self, arg: object) -> bool:
+        """Whether `arg` is a plain function or bound method, the direct-registration form.
 
-        Only plain functions and bound methods count as implementations, so callable
-        dispatch keys (a class, a `functools.partial`) take the keyed path and
-        `@register(SomeClass)` keys on the class rather than binding it as an impl.
-        As a method, the guard is tied to the dispatcher's own `P`/`R`, collapsing
-        `arg` to `Callable[P, R]` so it may be bound directly.
+        Only these count as implementations, so callable dispatch keys (a class, a
+        `functools.partial`) take the keyed path and `@register(SomeClass)` keys on the
+        class rather than binding it as an impl. Not a `TypeGuard`: the caller already
+        knows `arg`'s precise `Callable[Q, R]` from its own call site, a per-call `Q` this
+        method has no way to recover from a runtime `inspect` check, so `register` casts
+        instead of narrowing through here.
 
         arg: the value passed to `register`, either a key or the function itself.
         """
         return inspect.isfunction(arg) or inspect.ismethod(arg)
 
-    def implied_key(self, impl: Callable[P, R]) -> str:
+    def implied_key[**Q](self, impl: Callable[Q, R]) -> str:
         """Derive the registry key from the impl's `__name__`, failing clearly when absent."""
         try:
             return impl.__name__
@@ -142,11 +144,17 @@ class value_dispatch(Generic[P, R]):
                 f"Register it with an explicit key, for example register(name=...).",
             ) from None
 
-    def bind(self, impl: Callable[P, R], key: Hashable) -> Callable[P, R]:
-        """Store `impl` under `key`, also exposing it as an attribute when that is safe."""
+    def bind[**Q](self, impl: Callable[Q, R], key: Hashable) -> Callable[Q, R]:
+        """Store `impl` under `key`, also exposing it as an attribute when that is safe.
+
+        The registry only ever calls a stored impl with the arguments a matching dispatch
+        call actually supplies, never with `P` reconstructed from thin air, so re-typing
+        `impl` here to the dispatcher's own `Callable[P, R]` costs no real safety, only the
+        precision of `Q`, which this one boundary is exactly where that trade belongs.
+        """
         if self.exposable(key):
             setattr(self, key, impl)
-        self.registry_map[key] = impl
+        self.registry_map[key] = cast("Callable[P, R]", impl)
         return impl
 
     def exposable(self, key: Hashable) -> TypeGuard[str]:
@@ -174,12 +182,24 @@ class value_dispatch(Generic[P, R]):
     def __contains__(self, key: Hashable) -> bool:
         return key in self.registry_map
 
+    def __getattr__(self, name: str) -> Callable[P, R]:
+        """Type the attribute `bind` exposes for an identifier-shaped key (`dispatcher.foo`).
+
+        Only reached when normal lookup misses, so a real attribute (`registry_map`, an
+        exposed impl `bind` has actually set) is always found first; this exists solely to
+        give the type checker a return type for the dynamic `dispatcher.foo(...)` surface
+        `register` documents, which no static attribute list can otherwise describe.
+
+        name: the exposed kind being looked up.
+        """
+        raise AttributeError(name)
+
     def __repr__(self) -> str:
         name = self.fallback.__name__ if self.fallback else "(unbound)"
         return f"<value_dispatch {name!r} kinds={self.kinds()}>"
 
 
-class type_dispatch(Generic[P, R]):
+class type_dispatch[**P, R]:
     """Turn a function into a type-dispatched generic, the dual of :class:`value_dispatch`.
 
     Where `value_dispatch` keys on the *value* of a keyword argument, this keys on the *type* of
@@ -250,15 +270,21 @@ class type_dispatch(Generic[P, R]):
                 return self.registry_map[base]
         return fallback
 
-    def register(
+    def register[**Q](
         self,
-        arg: type | Callable[P, R] | None = None,
-    ) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
+        arg: type | Callable[Q, R] | None = None,
+    ) -> Callable[Q, R] | Callable[[Callable[Q, R]], Callable[Q, R]]:
         """Register an implementation for a type.
 
         Two forms mirroring `value_dispatch`:
         - `@register` bare: the type is read from the first parameter's annotation.
         - `@register(SomeType)`: the type is given explicitly.
+
+        `Q` is its own type parameter, distinct from the dispatcher's `P`: an impl's first
+        parameter is annotated with the concrete type it handles, narrower than whatever
+        the fallback declares, which is the whole point of registering it. `bind` is where
+        that narrower shape is deliberately forgotten, the same trade `value_dispatch.bind`
+        makes for the same reason.
 
         arg: the explicit type, or the implementation itself in the bare form.
         """
@@ -268,7 +294,7 @@ class type_dispatch(Generic[P, R]):
             return self.bind(self.annotated_type(arg), arg)
         return lambda impl: self.bind(self.annotated_type(impl), impl)
 
-    def annotated_type(self, impl: Callable[P, R]) -> type:
+    def annotated_type[**Q](self, impl: Callable[Q, R]) -> type:
         """The type annotation of `impl`'s first parameter, failing clearly when it is absent."""
         hints = inspect.signature(impl).parameters
         first = next(iter(hints.values()), None)
@@ -284,9 +310,9 @@ class type_dispatch(Generic[P, R]):
             )
         return first.annotation
 
-    def bind(self, cls: type, impl: Callable[P, R]) -> Callable[P, R]:
+    def bind[**Q](self, cls: type, impl: Callable[Q, R]) -> Callable[Q, R]:
         """Store `impl` as the implementation for `cls`, returning `impl` unchanged."""
-        self.registry_map[cls] = impl
+        self.registry_map[cls] = cast("Callable[P, R]", impl)
         return impl
 
     @property

@@ -1,15 +1,8 @@
-from __future__ import annotations
-
-from typing import Generic, TypeVar
-
-S = TypeVar("S")
-
-
 class IllegalTransition(RuntimeError):
     """Raised when a :class:`Lifecycle` is asked to move along an edge its table does not allow."""
 
 
-class Lifecycle(Generic[S]):
+class Lifecycle[S]:
     """A typed state machine that permits only the transitions its table declares.
 
     The replacement for the ad-hoc status string a long-running unit carries, where every writer

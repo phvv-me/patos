@@ -202,7 +202,11 @@ def test_value_dispatch_callable_keys_and_nameless_impl_error() -> None:
     with pytest.raises(TypeError, match="no __name__"):
         render.register()(nameless)
     render.register(name="partial")(nameless)
-    assert render(kind="partial") == "fallback"
+    # `__call__` types its arguments against the fallback's own `P` (`sample`'s `node`), but a
+    # caller who knows the registered impl is a zero-arg `functools.partial` may skip what that
+    # impl no longer needs; the dispatcher forwards whatever it is actually given rather than
+    # reconstructing `P` from thin air, so this is a real, intentionally off-contract call.
+    assert render(kind="partial") == "fallback"  # pyrefly: ignore[missing-argument]
 
 
 def test_value_dispatch_fallback_dict_does_not_overwrite_state() -> None:

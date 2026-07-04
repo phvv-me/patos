@@ -1,9 +1,5 @@
-from __future__ import annotations
-
 from collections.abc import Callable, Iterator
-from typing import Generic, Protocol, TypeVar, runtime_checkable
-
-T = TypeVar("T")
+from typing import Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -28,7 +24,7 @@ class StrategyError(LookupError):
     """
 
 
-class Strategy(Generic[T]):
+class Strategy[T]:
     """A family of interchangeable named implementations with runtime selection.
 
     `Strategy` replaces the bespoke `{"a": A(), "b": B()}.get(kind, default)` and

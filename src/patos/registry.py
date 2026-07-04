@@ -57,7 +57,7 @@ class Registry:
     one succeeds.
     """
 
-    registry_entries: ClassVar[list[type["Registry"]]]
+    registry_entries: ClassVar[list[type[Registry]]]
     name: ClassVar[str]  # auto-derived kebab-case of the class name unless declared
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -131,17 +131,20 @@ class Registry:
         return [impl.name for impl in cls.implementations()]
 
     @classmethod
-    def find(cls, name: str, *, attr: str = "name") -> type[Self]:
+    def find(cls, name: str, *, attr: str = "name", default: str | None = None) -> type[Self]:
         """Return the concrete implementation whose own `attr` equals `name`.
 
         The typed replacement for the `{c.name: c for c in Base.registry()}[name]` lookup that
         keyed registries hand-roll. Only attributes defined on the implementation class itself
         count, so a subclass that forgot its own key never answers for an inherited one, and a
         duplicate key raises a `ValueError` instead of silently shadowing an earlier class. A
-        miss raises a `KeyError` listing the known keys.
+        miss falls back to `default` when one is given and registered, so a caller that wants a
+        graceful fallback opts in explicitly; with no `default`, or a `default` that is itself
+        unregistered, a miss raises a `KeyError` listing the known keys.
 
         name: the key to look up.
         attr: the class attribute carrying each implementation's key.
+        default: key to fall back to when `name` is not registered.
         """
         matches: dict[object, type[Self]] = {}
         for impl in cls.implementations():
@@ -154,14 +157,15 @@ class Registry:
                     f"{matches[key].__name__} and {impl.__name__}.",
                 )
             matches[key] = impl
-        try:
+        if name in matches:
             return matches[name]
-        except KeyError:
-            known = sorted(map(repr, matches))
-            raise KeyError(
-                f"{cls.__name__} has no implementation with {attr}={name!r}. "
-                f"Known {attr}s are {known}.",
-            ) from None
+        if default is not None and default in matches:
+            return matches[default]
+        known = sorted(map(repr, matches))
+        raise KeyError(
+            f"{cls.__name__} has no implementation with {attr}={name!r}. "
+            f"Known {attr}s are {known}.",
+        ) from None
 
     @classmethod
     def select(cls, predicate: Callable[[type[Self]], bool]) -> list[type[Self]]:

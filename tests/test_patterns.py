@@ -1,4 +1,4 @@
-from typing import Self
+from typing import ClassVar, Self, cast
 
 import pytest
 from hypothesis import given
@@ -38,7 +38,7 @@ def test_registry_implementations_excludes_root_and_abstract_bases(
     assert tuple(impls) == codec_impls
     assert codec_root not in impls
     assert codec_root.root() is codec_root
-    assert all(not c.__abstractmethods__ for c in impls)
+    assert all(not getattr(c, "__abstractmethods__", frozenset()) for c in impls)
     assert set(impls) < set(codec_root.registry())
 
 
@@ -91,6 +91,26 @@ def test_registry_find_by_name_and_clear_error_on_miss(
     assert "'base'" not in message and "'binary'" not in message.split("Known")[1]
 
 
+def test_registry_find_falls_back_to_a_registered_default_on_miss(
+    codec_root: type[Registry],
+    codec_impls: tuple[type[Registry], type[Registry]],
+) -> None:
+    """A miss with a registered `default` resolves to it instead of raising."""
+    json_impl, _ = codec_impls
+
+    assert codec_root.find("binary", default="json") is json_impl
+    assert codec_root.find("json", default="yaml") is json_impl
+
+
+def test_registry_find_still_raises_when_the_default_is_itself_unregistered(
+    codec_root: type[Registry],
+) -> None:
+    """A `default` that names no implementation still raises the same typed miss."""
+    with pytest.raises(KeyError) as miss:
+        codec_root.find("binary", default="also-missing")
+    assert "no implementation with name='binary'" in miss.value.args[0]
+
+
 def test_registry_find_honors_custom_attribute() -> None:
     """`find` can key on any class attribute, not just the default `name`."""
 
@@ -120,14 +140,18 @@ def test_registry_dispatch_tries_each_and_groups_all_refusals() -> None:
 
     class Json(Codec):
         @classmethod
-        def from_dispatch(cls, raw: str) -> Self:
+        # Each implementation narrows `from_dispatch`'s `*args, **kwargs` to the shape its
+        # own format actually parses; `Registry.dispatch` forwards the same call-site
+        # arguments to every implementation and lets the ones that do not accept them raise,
+        # which is exactly the heterogeneous-signature contract this test exercises.
+        def from_dispatch(cls, raw: str) -> Self:  # pyrefly: ignore[bad-override]
             if raw != "json":
                 raise ValueError("not json")
             return cls()
 
     class Yaml(Codec):
         @classmethod
-        def from_dispatch(cls, raw: str) -> Self:
+        def from_dispatch(cls, raw: str) -> Self:  # pyrefly: ignore[bad-override]
             raise TypeError("yaml refuses")
 
     assert isinstance(Codec.dispatch("json"), Json)
@@ -251,7 +275,10 @@ def test_registry_kebab_derivation_round_trips(parts: list[str]) -> None:
     class Base(Registry):
         pass
 
-    impl = type(pascal, (Base,), {})
+    # The 3-arg `type(...)` form returns plain `type`, though the class it builds is a real
+    # `Base` subclass (its bases say so at runtime); the cast reflects that back to the
+    # checker the same way `Registry` itself casts around its own dynamic class-tree walks.
+    impl = cast("type[Base]", type(pascal, (Base,), {}))
 
     assert impl.name == expected
     assert impl.name.strip("-") == impl.name
@@ -507,7 +534,7 @@ def test_registry_auto_derives_kebab_name_unless_declared() -> None:
         name = "fancy"
 
     class Annotated(AudioCodec):
-        name: str = "declared"
+        name: ClassVar[str] = "declared"
 
     assert AudioCodec.name == "audio-codec"
     assert OpusFB8.name == "opus-fb8"
@@ -557,7 +584,7 @@ def test_registry_bare_annotation_does_not_suppress_derivation() -> None:
         pass
 
     class Worker(Base):
-        name: str
+        name: ClassVar[str]
 
     assert Worker.name == "worker"
     assert Base.find("worker") is Worker

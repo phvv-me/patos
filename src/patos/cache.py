@@ -1,13 +1,7 @@
-from __future__ import annotations
-
 from collections.abc import Callable
-from typing import Generic, TypeVar
-
-K = TypeVar("K")
-V = TypeVar("V")
 
 
-class DerivedCache(Generic[K, V]):
+class DerivedCache[K, V]:
     """A load-once cache of a derived value keyed by whatever it actually depends on.
 
     The convention a long search reaches for when an expensive artifact (a per-site factorization,

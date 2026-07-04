@@ -1,10 +1,21 @@
 import abc
 from functools import cached_property
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
 from .flyweight import FlyweightMeta
 from .registry import Registry
+
+if TYPE_CHECKING:
+    # Pydantic does not export its model metaclass publicly, so the type checker sees it
+    # through its internal module while runtime keeps resolving it dynamically below. This
+    # gives mypy a concrete base for `InternedModelMeta`, which both clears the "dynamic base
+    # class" error on the expression it replaces and lets mypy see `InternedModelMeta` as an
+    # actual `ModelMetaclass` subclass, resolving the metaclass conflict on `InternedComponent`.
+    from pydantic._internal._model_construction import ModelMetaclass
+else:
+    ModelMetaclass = type(BaseModel)
 
 IGNORED_TYPES: tuple[type, ...] = (cached_property,)
 
@@ -59,7 +70,7 @@ class FrozenFlexModel(BaseModel):
     )
 
 
-class InternedModelMeta(FlyweightMeta, type(FrozenFlexModel)):
+class InternedModelMeta(FlyweightMeta, ModelMetaclass):
     """Pydantic model metaclass that also interns instances by construction arguments.
 
     Combines `FlyweightMeta` with pydantic's own metaclass so a frozen model becomes a

@@ -1,11 +1,4 @@
-from __future__ import annotations
-
-from typing import Generic, TypeVar
-
-W = TypeVar("W")
-
-
-class Decorator(Generic[W]):
+class Decorator[W]:
     """A transparent wrapper forwarding everything to its `wrapped` object but what it overrides.
 
     The lifted delegation base the codec combinators hand-roll: each wraps one inner object and

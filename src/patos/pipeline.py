@@ -1,15 +1,9 @@
-from __future__ import annotations
-
 from collections.abc import Callable
-from typing import Generic, Protocol, TypeVar, runtime_checkable
-
-T = TypeVar("T")
-Source = TypeVar("Source")
-Frame = TypeVar("Frame")
+from typing import Protocol, runtime_checkable
 
 
 @runtime_checkable
-class Reversible(Protocol[Source, Frame]):
+class Reversible[Source, Frame](Protocol):
     """One invertible stage of a :class:`Pipeline`: a `forward` paired with its `inverse`.
 
     The contract the codec transforms (rotate, scale, whiten) and the gauge steps already meet:
@@ -27,7 +21,7 @@ class Reversible(Protocol[Source, Frame]):
         """Bring a value in this stage's frame back to the original space."""
 
 
-class Pipeline(Generic[T]):
+class Pipeline[T]:
     """A reversible stack of stages, applied in order forward and unwound in reverse.
 
     The shape the composed codec (rotate, scale, round, decode, unrotate) and the gauge chain

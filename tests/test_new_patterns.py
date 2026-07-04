@@ -88,7 +88,12 @@ def test_decorator_forwards_everything_but_the_overrides() -> None:
 
     loud = Loud(Inner())
     assert loud.label() == "INNER"  # overridden
-    assert loud.kind() == "raw"  # delegated method
+    # `Decorator.__getattr__` forwards to `wrapped` for whatever attribute is missing, so its
+    # return type is honestly `object` (there is no way to know ahead of the call whether a
+    # forwarded name is data or a method); calling or reading it back is exactly what the
+    # class's docstring promises, and irreducible to anything narrower without per-attribute
+    # overloads on an open-ended `wrapped`.
+    assert loud.kind() == "raw"  # pyrefly: ignore[not-callable]  # delegated method
     assert loud.size == 8  # delegated data
     assert "Loud wrapping" in repr(loud)
 
@@ -102,9 +107,12 @@ def test_decorator_writes_land_on_the_decorator_not_the_wrapped_object() -> None
 
     inner = Inner()
     decorator = Decorator(inner)
-    decorator.size = 16
+    # `Decorator` declares no fixed attribute set on purpose: writes are meant to land on
+    # whichever instance they are made on (the decorator here, never `wrapped`), so `size` is
+    # a new attribute rather than one type-checkable ahead of the assignment.
+    decorator.size = 16  # pyrefly: ignore[missing-attribute]
 
-    assert decorator.size == 16
+    assert decorator.size == 16  # pyrefly: ignore[missing-attribute]
     assert inner.size == 8
 
 
