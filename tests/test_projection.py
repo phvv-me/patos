@@ -1,20 +1,20 @@
 import pytest
 
-from patos import Projection
+from patos import FieldProjection, Projection
 
 
-class Symbolic(Projection):
+class Symbolic(Projection[str]):
     """Project each field to a symbol tagged with its name."""
 
     x: int
     label: str = "none"
 
     @classmethod
-    def __project__(cls, name: str) -> object:
+    def __project__(cls, name: str) -> str:
         return f"sym({name})"
 
 
-class Bare(Projection):
+class Bare(Projection[str]):
     value: int = 0
 
 
@@ -44,3 +44,10 @@ def test_default_hook_refuses_projection() -> None:
     with pytest.raises(NotImplementedError, match="value"):
         Bare.value  # noqa: B018
     assert Bare(value=7).value == 7
+
+
+def test_descriptor_rejects_direct_instance_access() -> None:
+    descriptor = FieldProjection[str]("x")
+
+    with pytest.raises(AttributeError, match="x"):
+        descriptor.__get__(Symbolic(x=3), Symbolic)
