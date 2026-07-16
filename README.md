@@ -19,6 +19,17 @@ pip install patos
 
 Or copy a single duck. Open its docs page, copy the source from the Source section, and paste it into your own project. No dependency, no version pin, no tool, just one module you own.
 
+The optional PostgreSQL toolkit installs SQLAlchemy, pgvector, and inflection only when a
+project asks for them.
+
+```sh
+pip install "patos[sql]"
+```
+
+```python
+from patos import sql
+```
+
 ## Patterns
 
 ### Creational
@@ -51,6 +62,12 @@ Or copy a single duck. Open its docs page, copy the source from the Source secti
 | pato | description | docs |
 |---|---|---|
 | `StrFlag` | an enum `Flag` whose members carry a literal string, OR-combinable and iterable | [docs](https://phvv.me/patos/patos/strflag/) |
+
+### Optional extensions
+
+| namespace | description | docs |
+|---|---|---|
+| `sql` | typed SQLModel columns, native PostgreSQL enums, pgvector cosine distance, JSONB reads, and set based SQL helpers | [docs](https://phvv.me/patos/patos/sql/) |
 
 ## Example
 

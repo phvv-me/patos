@@ -53,7 +53,7 @@ def emit(node: str, **kw: object) -> str: ...
 ## Public API
 
 - `value_dispatch`. Decorator. Works bare (`@value_dispatch`) or parametrized (`@value_dispatch(kind="how")`).
-- `.register(key=None, *, name=None)`. Register an implementation, bare for the function name, or with an explicit key. Identifier keys are also exposed as attributes unless they would shadow the dispatcher's own API.
+- `.register(key=None, *, name=None)`. Return an implementation decorator. Empty parentheses infer the function name. A key or `name` sets it explicitly. Identifier keys are also exposed as attributes unless they would shadow the dispatcher's own API.
 - `.registry`. Read-only view of the kind to implementation mapping.
 - `.kinds()`. All registered kinds, sorted by `repr`.
 - `key in dispatcher`. Membership test on registered kinds.
@@ -74,7 +74,7 @@ def render(node):
     return "unknown"
 
 
-@render.register
+@render.register()
 def _(node: Circle):       # type read from the first parameter's annotation
     return "circle"
 
@@ -89,7 +89,7 @@ render(object())           # "unknown" -- unmatched type falls back
 ```
 
 - `type_dispatch`. Decorator. Works bare (`@type_dispatch`) or parametrized (`@type_dispatch()`).
-- `.register(type=None)`. Register an implementation, bare for the first parameter's annotation, or with an explicit type. A call resolves the argument's type against the registry by walking its MRO, so the most specific registered base wins.
+- `.register(type=None)`. Return an implementation decorator. Empty parentheses infer the first parameter's type annotation. An explicit type selects it directly. A call resolves the argument's type against the registry by walking its MRO, so the most specific registered base wins.
 - `.registry`. Read-only view of the type to implementation mapping.
 - `.types()`. All registered types, sorted by name.
 - `cls in dispatcher`. Membership test on registered types.

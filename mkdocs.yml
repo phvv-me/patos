@@ -64,6 +64,8 @@ nav:
           - patos/cache.md
       - Command-line:
           - patos/strflag.md
+      - Optional extensions:
+          - patos/sql.md
   - Reference:
       - API: api.md
       - Release: release.md

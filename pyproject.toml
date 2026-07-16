@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "patos"
-version = "0.0.8"
+version = "0.0.9"
 description = "Typed Python design and dispatch patterns, pip one in or copy one in and own the file"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -23,6 +23,11 @@ classifiers = [
 dependencies = ["pydantic>=2.13.4,<3"]
 
 [project.optional-dependencies]
+sql = [
+  "inflection>=0.5.1,<0.6",
+  "pgvector>=0.5,<0.6",
+  "sqlalchemy>=2.1.0b3,<3",
+]
 dev = [
   "hypothesis>=6",
   "mypy>=1.11",
@@ -31,6 +36,7 @@ dev = [
   "pytest-cov>=5",
   "pytest-randomly>=3",
   "ruff>=0.15",
+  "sqlmodel>=0.0.39,<0.1",
 ]
 docs = [
   "mkdocs-material>=9.5",
@@ -57,7 +63,7 @@ python_version = "3.14"
 strict = true
 disallow_any_explicit = true
 plugins = ["pydantic.mypy"]
-files = ["src"]
+files = ["src", "typing"]
 mypy_path = "src"
 
 # pydantic's model metaclass makes mypy attribute an explicit Any to every BaseModel
@@ -67,9 +73,14 @@ mypy_path = "src"
 module = "patos.bases"
 disallow_any_explicit = false
 
+
 [tool.pyrefly]
-project-includes = ["src", "tests"]
-search-path = ["src", "tests", "."]
+project-includes = ["src", "tests", "typing"]
+search-path = ["src", "tests", "typing", "."]
+# In the monorepo every package must resolve third parties from the one pixi env, or class
+# identities split across packages (pydantic.BaseModel != pydantic.BaseModel); standalone
+# checkouts lack this path and pyrefly falls back to the local environment.
+python-interpreter-path = "../../.chefe/.pixi/envs/default/bin/python"
 
 [tool.pytest.ini_options]
 addopts = "-q -ra --strict-markers"

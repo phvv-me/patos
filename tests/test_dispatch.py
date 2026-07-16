@@ -101,7 +101,7 @@ def test_value_dispatch_registration_forms_and_dispatch() -> None:
     """Every registration form dispatches, kind=None falls back, an unknown kind raises."""
     render = value_dispatch(sample)
 
-    @render.register
+    @render.register()
     def html(node: object) -> str:
         return "html"
 
@@ -116,7 +116,7 @@ def test_value_dispatch_registration_forms_and_dispatch() -> None:
     def existing(node: object) -> str:
         return "csv"
 
-    render.register(existing, name="csv")
+    render.register(name="csv")(existing)
 
     assert render(None, kind="html") == "html"
     assert render.html(None) == "html"
@@ -155,11 +155,11 @@ def test_value_dispatch_impl_named_after_api_does_not_clobber_it() -> None:
     """Keys shadowing dispatcher API dispatch by key while the API keeps working."""
     render = value_dispatch(sample)
 
-    @render.register
+    @render.register()
     def register(node: object) -> str:
         return "registered"
 
-    @render.register
+    @render.register()
     def kinds(node: object) -> str:
         return "kinds"
 
@@ -168,7 +168,7 @@ def test_value_dispatch_impl_named_after_api_does_not_clobber_it() -> None:
     assert callable(render.register)
     assert render.kinds() == ["kinds", "register"]
 
-    @render.register
+    @render.register()
     def html(node: object) -> str:
         return "html"
 
@@ -183,7 +183,7 @@ def test_value_dispatch_impl_named_after_api_does_not_clobber_it() -> None:
 
 
 def test_value_dispatch_callable_keys_and_nameless_impl_error() -> None:
-    """A class or partial works as a dispatch key; a nameless bare impl errors clearly."""
+    """Callable keys work and inferred keys reject nameless implementations."""
 
     class Markdown:
         pass

@@ -15,6 +15,7 @@ from .dispatch import type_dispatch, value_dispatch
 from .flyweight import FlyweightMeta
 from .lifecycle import IllegalTransition, Lifecycle
 from .pipeline import Pipeline, Reversible
+from .projection import FieldProjection, Projection
 from .registry import Registry, available
 from .singleton import Singleton, SingletonMeta
 from .strategy import Available, Strategy, StrategyError
@@ -27,9 +28,11 @@ except PackageNotFoundError:
 
 __all__ = [
     "Available",
+    "available",
     "Component",
     "Decorator",
     "DerivedCache",
+    "FieldProjection",
     "FlexModel",
     "FlyweightMeta",
     "FrozenFlexModel",
@@ -40,14 +43,14 @@ __all__ = [
     "Lifecycle",
     "Model",
     "Pipeline",
+    "Projection",
     "Registry",
     "Reversible",
     "Singleton",
     "SingletonMeta",
-    "StrFlag",
     "Strategy",
     "StrategyError",
-    "available",
+    "StrFlag",
     "type_dispatch",
     "value_dispatch",
 ]

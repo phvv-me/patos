@@ -223,7 +223,7 @@ def test_type_dispatch_routes_on_the_first_argument_type() -> None:
     def render(node: object = None) -> str:
         return "unknown"
 
-    @render.register
+    @render.register()
     def _(node: Circle) -> str:
         return "circle"
 
@@ -309,12 +309,12 @@ def test_type_dispatch_bare_register_needs_a_class_annotation() -> None:
 
     with pytest.raises(TypeError, match="no annotation"):
 
-        @render.register
+        @render.register()
         def _(node) -> str:  # type: ignore[no-untyped-def]
             return "x"
 
     with pytest.raises(TypeError, match="not\n? *a class"):
 
-        @render.register
+        @render.register()
         def _(node: int | str) -> str:
             return "x"

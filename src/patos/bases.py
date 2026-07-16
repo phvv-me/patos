@@ -2,7 +2,8 @@ import abc
 from functools import cached_property
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
+from pydantic.main import BaseModel
 
 from .flyweight import FlyweightMeta
 from .registry import Registry

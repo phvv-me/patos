@@ -34,6 +34,17 @@ from patos import Registry, Singleton
 Or copy a single duck. Open its page, copy the source from the **Source** section, and paste it
 into your own project. No dependency, no version pin, no tool, just one module you own.
 
+The SQL namespace is an optional extension rather than a top level import. Install its extra and
+import the namespace when a project uses PostgreSQL.
+
+```sh
+pip install "patos[sql]"
+```
+
+```python
+from patos import sql
+```
+
 ## The flock
 
 ### Creational
@@ -65,3 +76,9 @@ into your own project. No dependency, no version pin, no tool, just one module y
 | pato | exports | what it does |
 |---|---|---|
 | [strflag](patos/strflag.md) | `StrFlag` | an enum `Flag` whose members carry a literal string, OR-combinable and iterable |
+
+### Optional extensions
+
+| extension | exports | what it does |
+|---|---|---|
+| [sql](patos/sql.md) | `sql.Column`, `sql.PGEnum`, `sql.TypedJSONB`, `sql.CosineHalfvec`, SQL expression helpers | concise typed PostgreSQL and SQLModel building blocks installed through `patos[sql]` |

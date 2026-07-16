@@ -18,7 +18,7 @@ class value_dispatch[**P, R]:
         @value_dispatch(kind="how")
         def render(node, **kw): ...        # kind is "how"
 
-    Implementations register under a key with `@render.register`. Each is also
+    Implementations register under a key with `@render.register()`. Each is also
     exposed as an attribute (`render.html`) so callers that already know the
     kind can skip the registry lookup. Calling with no kind (or `kind=None`)
     falls back to the originally decorated function.
@@ -87,16 +87,14 @@ class value_dispatch[**P, R]:
 
     def register[**Q](
         self,
-        arg: Hashable | Callable[Q, R] | None = None,
+        key: Hashable | None = None,
         *,
         name: Hashable | None = None,
-    ) -> Callable[Q, R] | Callable[[Callable[Q, R]], Callable[Q, R]]:
+    ) -> Callable[[Callable[Q, R]], Callable[Q, R]]:
         """Register an implementation under a kind value.
 
-        Three forms:
-        - `@register` bare: key is the function's `__name__`.
-        - `@register("foo")` or `@register(name="foo")`: explicit key.
-        - `register(existing, name="alias")`: register an existing function.
+        `@register()` uses the function name. `@register(key)` and
+        `@register(name=key)` provide an explicit key.
 
         `Q` is its own type parameter, distinct from the dispatcher's `P`, because each
         kind routinely takes its own shape (a bound `functools.partial`, an impl that
@@ -107,32 +105,18 @@ class value_dispatch[**P, R]:
         state, the impl is also set as a dispatcher attribute, enabling direct
         `dispatcher.foo(...)` calls. Dispatch by key works either way.
 
-        arg: explicit key, or the function itself in the bare/direct forms.
-        name: explicit key, taking precedence over `arg` and the `__name__`.
+        key: explicit dispatch key.
+        name: explicit key, taking precedence over `key`.
         """
-        if self.is_impl(arg):
-            impl = cast("Callable[Q, R]", arg)
-            return self.bind(impl, impl.__name__ if name is None else name)
-        key = arg if name is None else name
+        dispatch_key = key if name is None else name
 
         def decorate(impl: Callable[Q, R]) -> Callable[Q, R]:
-            return self.bind(impl, self.implied_key(impl) if key is None else key)
+            return self.bind(
+                impl,
+                self.implied_key(impl) if dispatch_key is None else dispatch_key,
+            )
 
         return decorate
-
-    def is_impl(self, arg: object) -> bool:
-        """Whether `arg` is a plain function or bound method, the direct-registration form.
-
-        Only these count as implementations, so callable dispatch keys (a class, a
-        `functools.partial`) take the keyed path and `@register(SomeClass)` keys on the
-        class rather than binding it as an impl. Not a `TypeGuard`: the caller already
-        knows `arg`'s precise `Callable[Q, R]` from its own call site, a per-call `Q` this
-        method has no way to recover from a runtime `inspect` check, so `register` casts
-        instead of narrowing through here.
-
-        arg: the value passed to `register`, either a key or the function itself.
-        """
-        return inspect.isfunction(arg) or inspect.ismethod(arg)
 
     def implied_key[**Q](self, impl: Callable[Q, R]) -> str:
         """Derive the registry key from the impl's `__name__`, failing clearly when absent."""
@@ -211,7 +195,7 @@ class type_dispatch[**P, R]:
         @type_dispatch
         def render(node): ...               # the fallback for an unmatched type
 
-        @render.register
+        @render.register()
         def _(node: Circle): ...            # type read from the first parameter's annotation
 
         @render.register(Square)
@@ -272,12 +256,12 @@ class type_dispatch[**P, R]:
 
     def register[**Q](
         self,
-        arg: type | Callable[Q, R] | None = None,
-    ) -> Callable[Q, R] | Callable[[Callable[Q, R]], Callable[Q, R]]:
+        cls: type | None = None,
+    ) -> Callable[[Callable[Q, R]], Callable[Q, R]]:
         """Register an implementation for a type.
 
         Two forms mirroring `value_dispatch`:
-        - `@register` bare: the type is read from the first parameter's annotation.
+        - `@register()` reads the type from the first parameter's annotation.
         - `@register(SomeType)`: the type is given explicitly.
 
         `Q` is its own type parameter, distinct from the dispatcher's `P`: an impl's first
@@ -286,13 +270,12 @@ class type_dispatch[**P, R]:
         that narrower shape is deliberately forgotten, the same trade `value_dispatch.bind`
         makes for the same reason.
 
-        arg: the explicit type, or the implementation itself in the bare form.
+        cls: explicit type, or `None` to infer it from the implementation.
         """
-        if isinstance(arg, type):
-            return lambda impl: self.bind(arg, impl)
-        if arg is not None:
-            return self.bind(self.annotated_type(arg), arg)
-        return lambda impl: self.bind(self.annotated_type(impl), impl)
+        return lambda impl: self.bind(
+            self.annotated_type(impl) if cls is None else cls,
+            impl,
+        )
 
     def annotated_type[**Q](self, impl: Callable[Q, R]) -> type:
         """The type annotation of `impl`'s first parameter, failing clearly when it is absent."""

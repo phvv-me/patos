@@ -4,6 +4,24 @@ All notable changes to patos are documented here.
 
 The format follows Keep a Changelog, and releases are cut from the version in `pyproject.toml`.
 
+## 0.0.9
+
+### Added
+
+- The optional `patos[sql]` extra with the `patos.sql` namespace. It provides typed SQLModel
+  columns, native PostgreSQL enums, JSONB access, pgvector cosine distance, typed `VALUES`
+  relations, PostgreSQL digest, hexadecimal and UUIDv8 hashing, and SQL template helpers without
+  adding those dependencies to the core package. Hash algorithms are OpenSSL names resolved by
+  the database rather than a hardcoded Python allowlist.
+- `PGEnum.name`, `PGEnum.values`, and `PGEnum.type` derive native PostgreSQL enum metadata from
+  the qualified Python class. Nested names such as `Watermark.Kind` map to
+  `watermark_kind`, and enum values are persisted exactly as declared.
+
+### Changed
+
+- Reusable PostgreSQL helpers moved out of AIZK into Patos so database projects share one typed
+  interface through `from patos import sql`.
+
 ## 0.0.8
 
 ### Added
@@ -17,6 +35,7 @@ The format follows Keep a Changelog, and releases are cut from the version in `p
 
 ### Fixed
 
+- `value_dispatch.register` and `type_dispatch.register` now always return a decorator. The inferred forms use `@register()`, which removes the callable-key ambiguity and preserves implementation signatures under MyPy and Pyrefly.
 - `Registry` auto-naming now splits embedded acronyms, so `HTTPServer` derives to `http-server` and `XMLHttpRequest` to `xml-http-request` instead of fusing the acronym into the next word.
 - `Registry` auto-naming keeps a pure acronym whole even when it carries a digit, so the real codec `E8P` derives to `e8p` (not the broken `e8-p`) while a capital that begins a new word still splits (`E8Lattice` to `e8-lattice`). The derived key is now idempotent, which is what makes the `find` round-trip stable.
 - A bare `name: str` annotation on a subclass no longer suppresses kebab derivation. Earlier it skipped derivation without assigning anything, so the subclass silently inherited the root's key and answered `find` for the wrong name.

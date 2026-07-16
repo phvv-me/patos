@@ -5,6 +5,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from patos import FlyweightMeta, Registry, Singleton
+from patos.flyweight import Arg
 from patos.registry import CAMEL_BOUNDARY
 
 
@@ -478,6 +479,7 @@ def test_flyweight_interning_is_typed() -> None:
     assert true is not one_float
     assert Node(1) is one
     assert Node(tag=1) is not Node(tag=True)
+    assert Arg(1) != Arg("1")
 
 
 def test_flyweight_caches_are_per_class() -> None:
