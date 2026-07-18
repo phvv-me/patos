@@ -16,7 +16,7 @@ class SingletonMeta(type):
     # because one metaclass serves every class, each with its own `__init__` signature.
     def __call__(cls: type[R], *args: object, **kwargs: object) -> R:
         if "singleton_instance" not in cls.__dict__:
-            cls.singleton_instance = type.__call__(cls, *args, **kwargs)
+            type.__setattr__(cls, "singleton_instance", type.__call__(cls, *args, **kwargs))
         return cast(R, cls.__dict__["singleton_instance"])
 
 

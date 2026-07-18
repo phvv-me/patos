@@ -58,7 +58,7 @@ class FlyweightMeta(ABCMeta):
     def __call__(cls: type[R], *args: object, **kwargs: object) -> R:
         cache: dict[CacheKey, object] = cls.__dict__.get("flyweights", {})
         if "flyweights" not in cls.__dict__:
-            cls.flyweights = cache
+            type.__setattr__(cls, "flyweights", cache)
         key = (
             tuple(Arg(arg) for arg in args),
             frozenset((name, Arg(value)) for name, value in kwargs.items()),

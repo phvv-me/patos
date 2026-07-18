@@ -1,5 +1,20 @@
 from importlib.metadata import PackageNotFoundError, version
 
+__lazy_modules__ = {
+    "patos.bases",
+    "patos.cache",
+    "patos.decorator",
+    "patos.dispatch",
+    "patos.flyweight",
+    "patos.lifecycle",
+    "patos.pipeline",
+    "patos.projection",
+    "patos.registry",
+    "patos.singleton",
+    "patos.strategy",
+    "patos.strflag",
+}
+
 from .bases import (
     Component,
     FlexModel,

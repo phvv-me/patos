@@ -2,7 +2,13 @@ import functools
 import inspect
 from collections.abc import Callable, Hashable
 from types import MappingProxyType
-from typing import TypeGuard, cast
+from typing import Protocol, TypeGuard, cast
+
+
+class Named(Protocol):
+    """Callable metadata needed when a registration key is inferred."""
+
+    __name__: str
 
 
 class value_dispatch[**P, R]:
@@ -80,7 +86,8 @@ class value_dispatch[**P, R]:
             impl = self.registry_map[value]
         except KeyError:
             raise ValueError(
-                f"{self.fallback.__name__}: unknown {self.kind_arg}={value!r}; "
+                f"{getattr(self.fallback, '__name__', 'value_dispatch')}: unknown "
+                f"{self.kind_arg}={value!r}; "
                 f"choose from {sorted(self.registry_map, key=repr)}",
             ) from None
         return impl(*args, **kwargs)
@@ -121,7 +128,7 @@ class value_dispatch[**P, R]:
     def implied_key[**Q](self, impl: Callable[Q, R]) -> str:
         """Derive the registry key from the impl's `__name__`, failing clearly when absent."""
         try:
-            return impl.__name__
+            return cast(Named, impl).__name__
         except AttributeError:
             raise TypeError(
                 f"cannot infer a kind for {impl!r} because it has no __name__. "
@@ -179,7 +186,7 @@ class value_dispatch[**P, R]:
         raise AttributeError(name)
 
     def __repr__(self) -> str:
-        name = self.fallback.__name__ if self.fallback else "(unbound)"
+        name = getattr(self.fallback, "__name__", "(unbound)")
         return f"<value_dispatch {name!r} kinds={self.kinds()}>"
 
 
@@ -311,6 +318,6 @@ class type_dispatch[**P, R]:
         return cls in self.registry_map
 
     def __repr__(self) -> str:
-        name = self.fallback.__name__ if self.fallback else "(unbound)"
+        name = getattr(self.fallback, "__name__", "(unbound)")
         types = [cls.__name__ for cls in self.types()]
         return f"<type_dispatch {name!r} types={types}>"

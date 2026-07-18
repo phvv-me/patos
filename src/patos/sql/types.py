@@ -1,12 +1,15 @@
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Protocol, cast, overload
+from typing import Annotated, Protocol, cast, overload
 
 from pgvector.sqlalchemy import HALFVEC
+from pydantic import StringConstraints
 from sqlalchemy import ColumnElement, Float, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
 from .columns import JSONReader, JSONValue, ScalarReader, ScalarType
+
+NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 
 
 class JSONIndexer[T: JSONValue](Protocol):

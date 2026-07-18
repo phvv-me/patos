@@ -1,6 +1,7 @@
+import hashlib
 from collections.abc import Sequence
 from datetime import datetime
-from typing import cast
+from typing import cast, overload
 from uuid import UUID
 
 from pydantic import UUID8
@@ -31,22 +32,62 @@ def relation(
     return cast(CTE[SQLColumns], values(*columns, name=name).data(rows).cte())
 
 
-def digest(content: ColumnElement[bytes], algo: str = "sha256") -> ColumnElement[bytes]:
-    """Hash bytes in PostgreSQL with an OpenSSL digest selected by name."""
+@overload
+def digest(content: bytes, algo: str = "sha256") -> bytes: ...
+
+
+@overload
+def digest(
+    content: ColumnElement[bytes], algo: str = "sha256"
+) -> ColumnElement[bytes]: ...
+
+
+def digest(
+    content: bytes | ColumnElement[bytes], algo: str = "sha256"
+) -> bytes | ColumnElement[bytes]:
+    """Hash raw bytes locally or a byte expression inside PostgreSQL."""
+    if isinstance(content, bytes):
+        return hashlib.new(algo, content).digest()
     return type_coerce(func.digest(content, algo), LargeBinary)
 
 
-def hex(content: ColumnElement[bytes], algo: str = "sha256") -> ColumnElement[str]:
-    """Hash bytes in PostgreSQL and return lowercase hexadecimal text."""
+@overload
+def hex(content: bytes, algo: str = "sha256") -> str: ...
+
+
+@overload
+def hex(content: ColumnElement[bytes], algo: str = "sha256") -> ColumnElement[str]: ...
+
+
+def hex(
+    content: bytes | ColumnElement[bytes], algo: str = "sha256"
+) -> str | ColumnElement[str]:
+    """Hash raw bytes or a PostgreSQL expression into lowercase hexadecimal text."""
+    if isinstance(content, bytes):
+        return digest(content, algo).hex()
     return type_coerce(func.encode(digest(content, algo), "hex"), Text)
 
 
-def uuid8(content: ColumnElement[bytes], algo: str = "sha256") -> ColumnElement[UUID8]:
-    """Hash bytes in PostgreSQL into a deterministic RFC 9562 UUIDv8.
+@overload
+def uuid8(content: bytes, algo: str = "sha256") -> UUID8: ...
+
+
+@overload
+def uuid8(
+    content: ColumnElement[bytes], algo: str = "sha256"
+) -> ColumnElement[UUID8]: ...
+
+
+def uuid8(
+    content: bytes | ColumnElement[bytes], algo: str = "sha256"
+) -> UUID8 | ColumnElement[UUID8]:
+    """Hash raw bytes or a PostgreSQL expression into a deterministic UUIDv8.
 
     The first 128 digest bits carry the identity. Six reserved version and variant bits
     are then set, leaving 122 digest bits in the stored UUID.
     """
+    if isinstance(content, bytes):
+        return UUID(bytes=digest(content, algo)[:16], version=8)
     raw = func.substr(digest(content, algo), 1, 16)
     versioned = func.set_byte(
         raw,
