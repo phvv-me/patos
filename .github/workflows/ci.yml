@@ -11,10 +11,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The source uses PEP 758's unparenthesized multi-exception `except`, PEP 750
-        # template strings, and `uuid.uuid7`, all of which need 3.14, matching
-        # `requires-python`; testing older interpreters here would fail before a single
-        # check ran.
+        # The core patterns run on 3.13 and `requires-python` says so, but this job installs
+        # the `sql` extra, which reaches PEP 750 template strings and `uuid.uuid7`. Both
+        # arrived in 3.14, so the full suite only has one interpreter to run on.
         python: ["3.14"]
     steps:
       - uses: actions/checkout@v6
