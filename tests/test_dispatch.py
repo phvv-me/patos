@@ -20,7 +20,7 @@ def test_strategy_select_resolves_default_and_errors() -> None:
     assert s.select("lazy") == "L"
     assert s.select("named") == "N"
     assert s.select("missing", default="eager") == "E"
-    assert s.names == ("eager", "lazy", "named")
+    assert s.names == ["eager", "lazy", "named"]
     assert list(s) == ["eager", "lazy", "named"]
     assert "eager" in s and len(s) == 3
     assert "codecs" in repr(s)
@@ -255,6 +255,7 @@ def test_strflag_carries_string_and_or_combines() -> None:
     assert [m.value for m in Opt] == [1, 2, 4]
     combined = Opt.ALL | Opt.FAST
     assert [m.string for m in combined] == ["-a", "--fast"]
+    assert str(combined) == "-a --fast"
 
 
 def test_strflag_composite_and_empty_members_have_string() -> None:
@@ -267,3 +268,4 @@ def test_strflag_composite_and_empty_members_have_string() -> None:
     assert (Opt.ALL | Opt.BIG).string == "-a --big"
     assert (Opt.ALL & Opt.BIG).string == ""
     assert Opt(0).string == ""
+    assert str(Opt(0)) == ""

@@ -4,6 +4,27 @@ All notable changes to patos are documented here.
 
 The format follows Keep a Changelog, and releases are cut from the version in `pyproject.toml`.
 
+## 0.0.10
+
+### Added
+
+- `Runtime[T]`, a field annotation that treats one already-validated live object as an opaque
+  runtime value, so a `FrozenModel` can carry callables, locks, syntax trees, tensors, or clients
+  in selected fields without opening the whole model to arbitrary types.
+- `FrozenModel.stable_id`, a deterministic cached 64-bit identity derived from the model's
+  qualified name and its validated fields, so equal values hash equal across processes.
+- The `sql` extra now also installs `sqlmodel` and `typing-extensions`, which the typed SQL
+  namespace imports.
+
+### Changed
+
+- `Model` and `FrozenModel` now forbid extra fields, matching the house contract that a model
+  carries exactly what it declares.
+- `FrozenFlexModel` extends `FrozenModel`, so it inherits `stable_id`, the forbidden extras, and
+  the alias population alongside arbitrary type support.
+- `available` is renamed `is_available` so the probe reads as a question at every call site.
+- Python 3.13 is supported again; the source no longer relies on 3.14-only syntax.
+
 ## 0.0.9
 
 ### Added

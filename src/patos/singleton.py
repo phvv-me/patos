@@ -1,6 +1,6 @@
 from typing import TypeVar, cast
 
-R = TypeVar("R")
+_ResultT = TypeVar("_ResultT")
 
 
 class SingletonMeta(type):
@@ -12,12 +12,12 @@ class SingletonMeta(type):
     are independent singletons and no global table pins classes alive.
     """
 
-    # `cls: type[R]` makes `Counter()` return `Counter`; construction args stay `object`
+    # `cls: type[_ResultT]` makes `Counter()` return `Counter`; construction args stay `object`
     # because one metaclass serves every class, each with its own `__init__` signature.
-    def __call__(cls: type[R], *args: object, **kwargs: object) -> R:
+    def __call__(cls: type[_ResultT], *args: object, **kwargs: object) -> _ResultT:
         if "singleton_instance" not in cls.__dict__:
             type.__setattr__(cls, "singleton_instance", type.__call__(cls, *args, **kwargs))
-        return cast(R, cls.__dict__["singleton_instance"])
+        return cast(_ResultT, cls.__dict__["singleton_instance"])
 
 
 class Singleton(metaclass=SingletonMeta):

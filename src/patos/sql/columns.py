@@ -94,11 +94,11 @@ def concrete_type(kind: TypeExpression) -> type | None:
     return kind if isinstance(kind, type) else None
 
 
-def allows_none(kind: TypeExpression) -> bool:
+def _annotation_is_nullable(kind: TypeExpression) -> bool:
     """Return whether an annotation explicitly accepts `None`."""
     origin = get_origin(kind)
     if origin is Annotated:
-        return allows_none(typing_cast(TypeExpression, get_args(kind)[0]))
+        return _annotation_is_nullable(typing_cast(TypeExpression, get_args(kind)[0]))
     return origin in (Union, UnionType) and NoneType in get_args(kind)
 
 
@@ -167,6 +167,32 @@ if TYPE_CHECKING:
     class ModelInstance(Protocol):
         """Model instance accepted by the descriptor typing facade."""
 
+    class SQLFunction[T]:
+        """One dynamically named SQL function bound to a column as its first argument."""
+
+        @overload
+        def __call__(
+            self,
+            *args: FunctionArgument,
+            result: None = None,
+        ) -> Function[T]: ...
+        @overload
+        def __call__[R](
+            self,
+            *args: FunctionArgument,
+            result: type[R],
+        ) -> Function[R]: ...
+        def __call__[R](
+            self,
+            *args: FunctionArgument,
+            result: type[R] | None = None,
+        ) -> Function[T] | Function[R]: ...
+
+    class SQLFunctions[T]:
+        """Typed dynamic function namespace exposed as `Column.f`."""
+
+        def __getattr__(self, name: str) -> SQLFunction[T]: ...
+
     class Expr[T](ColumnElement[T]):
         """Typed SQL expression exposed by a `Column[T]` class attribute."""
 
@@ -219,34 +245,8 @@ if TYPE_CHECKING:
 
         def __matmul__(
             self,
-            other: Sequence[float] | ColumnElement[Sequence[float]] | Expr[Sequence[float]],
+            other: Sequence[float] | ColumnElement[Sequence[float]],
         ) -> ColumnElement[float]: ...
-
-    class SQLFunction[T]:
-        """One dynamically named SQL function bound to a column as its first argument."""
-
-        @overload
-        def __call__(
-            self,
-            *args: FunctionArgument,
-            result: None = None,
-        ) -> Function[T]: ...
-        @overload
-        def __call__[R](
-            self,
-            *args: FunctionArgument,
-            result: type[R],
-        ) -> Function[R]: ...
-        def __call__[R](
-            self,
-            *args: FunctionArgument,
-            result: type[R] | None = None,
-        ) -> Function[T] | Function[R]: ...
-
-    class SQLFunctions[T]:
-        """Typed dynamic function namespace exposed as `Column.f`."""
-
-        def __getattr__(self, name: str) -> SQLFunction[T]: ...
 
     class Column[T]:
         """Annotation facade with values on instances and SQL expressions on classes."""
@@ -303,7 +303,7 @@ class ModelField[T]:
             None
             if isinstance(default, PydanticUndefinedType)
             and default_factory is None
-            and allows_none(self.annotation)
+            and _annotation_is_nullable(self.annotation)
             else default
         )
         column_options: dict[str, str | ClauseElement] = {}
@@ -345,9 +345,7 @@ class Field[T](ModelField[T]):
     if TYPE_CHECKING:
 
         @overload
-        def __get__(
-            self, instance: None, owner: type[ModelInstance] | None = None
-        ) -> Expr[T]: ...
+        def __get__(self, instance: None, owner: type[ModelInstance] | None = None) -> Expr[T]: ...
 
         @overload
         def __get__(
@@ -366,9 +364,7 @@ class GeneratedField[T](ModelField[T]):
     if TYPE_CHECKING:
 
         @overload
-        def __get__(
-            self, instance: None, owner: type[ModelInstance] | None = None
-        ) -> Expr[T]: ...
+        def __get__(self, instance: None, owner: type[ModelInstance] | None = None) -> Expr[T]: ...
 
         @overload
         def __get__(
@@ -466,9 +462,7 @@ def PK[T](kind: TypeForm[T]) -> Field[T] | GeneratedField[int]:
         factory = typing_cast(Callable[[], T], uuid.uuid7)
         return Field(kind, default_factory=factory, primary_key=True)
     if expression is int:
-        return GeneratedField(
-            typing_cast(TypeForm[int], kind), default=None, primary_key=True
-        )
+        return GeneratedField(typing_cast(TypeForm[int], kind), default=None, primary_key=True)
     if expression is str:
         return Field(kind, primary_key=True, sa_type=Text)
     return Field(kind, primary_key=True)

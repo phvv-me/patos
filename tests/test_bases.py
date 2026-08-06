@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from patos import (
     Component,
     FlexModel,
@@ -5,6 +8,7 @@ from patos import (
     FrozenModel,
     InternedComponent,
     Model,
+    Runtime,
 )
 
 
@@ -26,8 +30,27 @@ def test_frozen_model_is_frozen_and_validates_by_name() -> None:
         size: int
 
     assert Config.model_config["frozen"] is True
+    assert Config.model_config["extra"] == "forbid"
     assert Config.model_config["populate_by_name"] is True
     assert Config(size=8).size == 8
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        Config.model_validate({"size": 8, "siez": 9})
+
+
+def test_frozen_model_stable_id_is_content_derived_and_process_stable() -> None:
+    """Stable identity includes model ownership and canonical validated content."""
+
+    class Point(FrozenModel):
+        x: int
+        labels: dict[str, int]
+
+    first = Point(x=1, labels={"beta": 2, "alpha": 1})
+    reordered = Point(x=1, labels={"alpha": 1, "beta": 2})
+    changed = Point(x=2, labels={"alpha": 1, "beta": 2})
+
+    assert 0 <= first.stable_id < 2**64
+    assert first.stable_id == reordered.stable_id
+    assert first.stable_id != changed.stable_id
 
 
 def test_flex_model_accepts_arbitrary_types() -> None:
@@ -44,7 +67,7 @@ def test_flex_model_accepts_arbitrary_types() -> None:
 
 
 def test_frozen_flex_model_is_frozen_and_arbitrary() -> None:
-    """`FrozenFlexModel` combines immutability with arbitrary-type fields."""
+    """`FrozenFlexModel` extends every strict frozen-model guarantee."""
 
     class Holder:
         pass
@@ -54,8 +77,30 @@ def test_frozen_flex_model_is_frozen_and_arbitrary() -> None:
 
     assert Box.model_config["frozen"] is True
     assert Box.model_config["arbitrary_types_allowed"] is True
+    assert Box.model_config["extra"] == "forbid"
+    assert Box.model_config["populate_by_name"] is True
     holder = Holder()
-    assert Box(item=holder).item is holder
+    box = Box(item=holder)
+    assert box.item is holder
+    assert isinstance(box, FrozenModel)
+
+
+def test_runtime_marks_an_already_validated_boundary() -> None:
+    """`Runtime` keeps any owned live value without asking Pydantic to schema its type."""
+
+    class Service:
+        pass
+
+    class Box(FrozenModel):
+        value: Runtime[int]
+        service: Runtime[Service]
+
+    service = Service()
+    box = Box.model_validate({"value": "already checked", "service": service})
+
+    assert box.value == "already checked"
+    assert box.service is service
+    assert Box.model_json_schema()["$defs"]["Runtime_Service_"] == {}
 
 
 def test_component_self_registers_with_kebab_name() -> None:

@@ -151,9 +151,7 @@ class AggregateComparator[T](ColumnProperty.Comparator[T]):
     @overload
     def lower[R](self, *, result: type[R]) -> ColumnElement[R]: ...
 
-    def lower[R](
-        self, *, result: type[R] | None = None
-    ) -> ColumnElement[T] | ColumnElement[R]:
+    def lower[R](self, *, result: type[R] | None = None) -> ColumnElement[T] | ColumnElement[R]:
         """Return the SQL lower value, declaring a different result type when needed."""
         return cast(ColumnElement[T] | ColumnElement[R], func.lower(self.__clause_element__()))
 
@@ -163,9 +161,7 @@ class AggregateComparator[T](ColumnProperty.Comparator[T]):
     @overload
     def upper[R](self, *, result: type[R]) -> ColumnElement[R]: ...
 
-    def upper[R](
-        self, *, result: type[R] | None = None
-    ) -> ColumnElement[T] | ColumnElement[R]:
+    def upper[R](self, *, result: type[R] | None = None) -> ColumnElement[T] | ColumnElement[R]:
         """Return the SQL upper value, declaring a different result type when needed."""
         return cast(ColumnElement[T] | ColumnElement[R], func.upper(self.__clause_element__()))
 
@@ -177,9 +173,7 @@ class AggregateComparator[T](ColumnProperty.Comparator[T]):
             func.coalesce(expression, default) if default is not None else expression,
         )
 
-    def avg(
-        self, default: Decimal | float | None = None
-    ) -> ColumnElement[Decimal | float]:
+    def avg(self, default: Decimal | float | None = None) -> ColumnElement[Decimal | float]:
         """Average this numeric column and optionally replace an empty result."""
         expression = func.avg(self.__clause_element__())
         return cast(
@@ -232,9 +226,7 @@ class ModelMeta(SQLModelMetaclass):
                 namespace[field_name] = value.info
         for field_name, annotation in declared.items():
             if field_name not in namespace and get_origin(annotation) is not ClassVar:
-                namespace[field_name] = ModelField(
-                    cast(TypeForm[ClassMember], annotation)
-                ).info
+                namespace[field_name] = ModelField(cast(TypeForm[ClassMember], annotation)).info
         namespace["__annotations__"] = cast(ClassMember, declared)
         return cast(type[SQLModel], super().__new__(cls, name, bases, namespace, **kwargs))
 

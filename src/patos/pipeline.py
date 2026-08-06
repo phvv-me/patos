@@ -1,4 +1,6 @@
-from collections.abc import Callable
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
 from typing import Protocol, runtime_checkable
 
 
@@ -39,8 +41,8 @@ class Pipeline[T]:
     stages: the reversible stages, outermost first.
     """
 
-    def __init__(self, stages: tuple[Reversible[T, T], ...] = ()) -> None:
-        self.stages = tuple(stages)
+    def __init__(self, stages: Iterable[Reversible[T, T]] = ()) -> None:
+        self.stages = list(stages)
 
     def forward(self, value: T) -> T:
         """Send `value` down through every stage's `forward`, outermost stage first."""
@@ -70,7 +72,7 @@ class Pipeline[T]:
 
     def then(self, stage: Reversible[T, T]) -> Pipeline[T]:
         """A new pipeline with `stage` appended as the new innermost stage."""
-        return Pipeline((*self.stages, stage))
+        return Pipeline([*self.stages, stage])
 
     def __len__(self) -> int:
         return len(self.stages)

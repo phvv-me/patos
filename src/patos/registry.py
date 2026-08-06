@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from typing import ClassVar, Self, cast
 
 # Split a camel name only where a new *word* starts: at a lowercase run meeting an upper
@@ -8,27 +10,10 @@ from typing import ClassVar, Self, cast
 # cut before the word. A bare capital that merely ends an acronym token never starts a word, so a
 # pure acronym keeps one segment whether or not it carries a digit (`RVQ` -> `rvq`, `E8P` ->
 # `e8p`), which is what makes the kebab key idempotent and the find round-trip stable.
-CAMEL_BOUNDARY = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[a-zA-Z0-9])(?=[A-Z][a-z])")
+_camel_boundary = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[a-zA-Z0-9])(?=[A-Z][a-z])")
 
 
-def generic_alias(impl: type) -> bool:
-    """Whether `impl` is a pydantic generic parametrization, not a distinct implementation.
-
-    Subclassing a generic model under PEP 695 (`class Sub[C](Base[C])`) makes pydantic
-    materialize one intermediate class per concrete parametrization a subclass pins
-    (`Base[Tensor]`, `Base[tuple[Tensor, C]]`), and each trips `__init_subclass__` and enrolls
-    in the registry under a bracketed kebab name (`base[tensor]`). Those aliases are typing
-    artifacts of their `origin` class, never separate providers, so `implementations()` drops
-    them. The signal is pydantic's own `__pydantic_generic_metadata__["origin"]`, which the alias
-    carries and the real concrete class leaves `None`; a non-pydantic class has no such attribute
-    and is kept. This keeps `names()` and `find` to the genuine implementations.
-
-    impl: the registry member being classified.
-    """
-    return getattr(impl, "__pydantic_generic_metadata__", {}).get("origin") is not None
-
-
-def available(impl: type) -> bool:
+def is_available(impl: type) -> bool:
     """Whether an implementation *class* reports itself runnable on this host.
 
     The default availability probe `Registry.first_available` walks with. It reads a class-level
@@ -71,7 +56,7 @@ class Registry:
         super().__init_subclass__(**kwargs)
 
         if "name" not in cls.__dict__:
-            cls.name = CAMEL_BOUNDARY.sub("-", cls.__name__).lower()
+            cls.name = _camel_boundary.sub("-", cls.__name__).lower()
         if Registry in cls.__bases__:
             cls.registry_entries = []
         for base in cls.__mro__:
@@ -116,8 +101,8 @@ class Registry:
             for entry in cls.registry()
             if entry is not cls
             and issubclass(entry, cls)
-            and not getattr(entry, "__abstractmethods__", frozenset())
-            and not generic_alias(entry)
+            and not getattr(entry, "__abstractmethods__", set())
+            and getattr(entry, "__pydantic_generic_metadata__", {}).get("origin") is None
         ]
 
     @classmethod
@@ -131,8 +116,14 @@ class Registry:
         return [impl.name for impl in cls.implementations()]
 
     @classmethod
-    def find(cls, name: str, *, attr: str = "name", default: str | None = None) -> type[Self]:
-        """Return the concrete implementation whose own `attr` equals `name`.
+    def find[Key: Hashable](
+        cls,
+        key: Key,
+        *,
+        attr: str = "name",
+        default: Key | None = None,
+    ) -> type[Self]:
+        """Return the concrete implementation whose own `attr` equals `key`.
 
         The typed replacement for the `{c.name: c for c in Base.registry()}[name]` lookup that
         keyed registries hand-roll. Only attributes defined on the implementation class itself
@@ -142,28 +133,28 @@ class Registry:
         graceful fallback opts in explicitly; with no `default`, or a `default` that is itself
         unregistered, a miss raises a `KeyError` listing the known keys.
 
-        name: the key to look up.
+        key: the hashable key to look up.
         attr: the class attribute carrying each implementation's key.
-        default: key to fall back to when `name` is not registered.
+        default: key to fall back to when `key` is not registered.
         """
-        matches: dict[object, type[Self]] = {}
+        matches: dict[Hashable, type[Self]] = {}
         for impl in cls.implementations():
             if attr not in vars(impl):
                 continue
-            key = vars(impl)[attr]
-            if key in matches:
+            candidate_key = vars(impl)[attr]
+            if candidate_key in matches:
                 raise ValueError(
-                    f"{cls.__name__} has duplicate {attr}={key!r} on "
-                    f"{matches[key].__name__} and {impl.__name__}.",
+                    f"{cls.__name__} has duplicate {attr}={candidate_key!r} on "
+                    f"{matches[candidate_key].__name__} and {impl.__name__}.",
                 )
-            matches[key] = impl
-        if name in matches:
-            return matches[name]
+            matches[candidate_key] = impl
+        if key in matches:
+            return matches[key]
         if default is not None and default in matches:
             return matches[default]
         known = sorted(map(repr, matches))
         raise KeyError(
-            f"{cls.__name__} has no implementation with {attr}={name!r}. "
+            f"{cls.__name__} has no implementation with {attr}={key!r}. "
             f"Known {attr}s are {known}.",
         ) from None
 
@@ -183,7 +174,7 @@ class Registry:
     @classmethod
     def first_available(
         cls,
-        probe: Callable[[type[Self]], bool] = lambda impl: available(impl),
+        probe: Callable[[type[Self]], bool] = is_available,
     ) -> type[Self]:
         """The first concrete implementation whose availability `probe` passes, raising on none.
 

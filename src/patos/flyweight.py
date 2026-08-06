@@ -1,7 +1,7 @@
 from abc import ABCMeta
 from typing import TypeVar, cast
 
-R = TypeVar("R")
+_ResultT = TypeVar("_ResultT")
 
 
 class Arg:
@@ -32,7 +32,7 @@ class Arg:
         if self.value is other.value:
             return True
         try:
-            return bool(self.value == other.value)
+            return self.value == other.value
         except RuntimeError, ValueError, TypeError:
             return False
 
@@ -53,16 +53,16 @@ class FlyweightMeta(ABCMeta):
     methods.
     """
 
-    # `cls: type[R]` makes `Node(...)` return `Node`; construction args stay `object` because
-    # one metaclass serves every class, each with its own `__init__` signature.
-    def __call__(cls: type[R], *args: object, **kwargs: object) -> R:
+    # `cls: type[_ResultT]` makes `Node(...)` return `Node`. Construction args stay `object`
+    # because one metaclass serves every class, each with its own `__init__` signature.
+    def __call__(cls: type[_ResultT], *args: object, **kwargs: object) -> _ResultT:
         cache: dict[CacheKey, object] = cls.__dict__.get("flyweights", {})
         if "flyweights" not in cls.__dict__:
             type.__setattr__(cls, "flyweights", cache)
         key = (
-            tuple(Arg(arg) for arg in args),
+            tuple(map(Arg, args)),
             frozenset((name, Arg(value)) for name, value in kwargs.items()),
         )
         if key not in cache:
             cache[key] = type.__call__(cls, *args, **kwargs)
-        return cast(R, cache[key])
+        return cast(_ResultT, cache[key])

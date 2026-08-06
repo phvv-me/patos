@@ -23,6 +23,7 @@ from .bases import (
     InternedComponent,
     InternedModelMeta,
     Model,
+    Runtime,
 )
 from .cache import DerivedCache
 from .decorator import Decorator
@@ -31,7 +32,7 @@ from .flyweight import FlyweightMeta
 from .lifecycle import IllegalTransition, Lifecycle
 from .pipeline import Pipeline, Reversible
 from .projection import FieldProjection, Projection
-from .registry import Registry, available
+from .registry import Registry, is_available
 from .singleton import Singleton, SingletonMeta
 from .strategy import Available, Strategy, StrategyError
 from .strflag import StrFlag
@@ -43,7 +44,7 @@ except PackageNotFoundError:
 
 __all__ = [
     "Available",
-    "available",
+    "is_available",
     "Component",
     "Decorator",
     "DerivedCache",
@@ -61,6 +62,7 @@ __all__ = [
     "Projection",
     "Registry",
     "Reversible",
+    "Runtime",
     "Singleton",
     "SingletonMeta",
     "Strategy",

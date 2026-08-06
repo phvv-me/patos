@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from enum import Flag
 
 
@@ -36,3 +38,7 @@ class StrFlag(Flag):
         custom ``__new__``, so their string is derived here from the canonical members.
         """
         return " ".join(member.literal for member in self)
+
+    def __str__(self) -> str:
+        """Return the declared literal text for members and composites."""
+        return self.string

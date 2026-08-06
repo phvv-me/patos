@@ -6,7 +6,6 @@ from hypothesis import strategies as st
 
 from patos import FlyweightMeta, Registry, Singleton
 from patos.flyweight import Arg
-from patos.registry import CAMEL_BOUNDARY
 
 
 def test_registry_roots_and_membership() -> None:
@@ -36,10 +35,10 @@ def test_registry_implementations_excludes_root_and_abstract_bases(
     """`implementations()` keeps only concrete members, dropping the root and abstract bases."""
     impls = codec_root.implementations()
 
-    assert tuple(impls) == codec_impls
+    assert list(impls) == list(codec_impls)
     assert codec_root not in impls
     assert codec_root.root() is codec_root
-    assert all(not getattr(c, "__abstractmethods__", frozenset()) for c in impls)
+    assert all(not getattr(c, "__abstractmethods__", set()) for c in impls)
     assert set(impls) < set(codec_root.registry())
 
 
@@ -129,6 +128,18 @@ def test_registry_find_honors_custom_attribute() -> None:
     with pytest.raises(KeyError) as miss:
         Driver.find("ftp", attr="scheme")
     assert "scheme='ftp'" in miss.value.args[0]
+
+
+def test_registry_find_accepts_non_string_hashable_keys() -> None:
+    """Typed registries may key providers by a fact class or another exact domain value."""
+
+    class Provider(Registry):
+        priority: ClassVar[int] = 0
+
+    class TextProvider(Provider):
+        priority = 1
+
+    assert Provider.find(1, attr="priority") is TextProvider
 
 
 def test_registry_dispatch_tries_each_and_groups_all_refusals() -> None:
@@ -317,10 +328,13 @@ def test_registry_kebab_keeps_acronym_with_digit_whole_and_round_trips() -> None
     assert E8Lattice.name == "e8-lattice"
     for impl in (RVQ, MOE, E8P, E8Lattice):
         assert Codec.find(impl.name) is impl
-        # idempotency is the round-trip property: deriving an already-kebab name is a no-op
+
+        class RoundTrip(Registry):
+            pass
+
         rebuilt = "".join(part.capitalize() for part in impl.name.split("-"))
-        assert CAMEL_BOUNDARY.sub("-", impl.name).lower() == impl.name
-        assert CAMEL_BOUNDARY.sub("-", rebuilt).lower() == impl.name
+        rebuilt_impl = cast("type[RoundTrip]", type(rebuilt, (RoundTrip,), {}))
+        assert rebuilt_impl.name == impl.name
 
 
 def test_registry_select_filters_implementations_in_registration_order() -> None:

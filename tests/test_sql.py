@@ -96,13 +96,20 @@ def test_primary_key_facade_encodes_generation_policy() -> None:
 
 
 def test_foreign_key_facade_derives_target_type_and_constraint() -> None:
+    class Named(sql.Model):
+        name = sql.PK(str)
+
     class Category(sql.Model, table=True):
         name = sql.PK(str)
+
+    class InheritedCategory(Named, table=True):
+        pass
 
     class Entry(sql.Model, table=True):
         id = sql.PK(int)
         category = sql.FK(Category.name, ondelete="CASCADE", index=True)
         fallback = sql.FK(Category.name, nullable=True)
+        inherited = sql.FK(InheritedCategory.name)
 
     entry = Entry(category="paper")
     category = Entry.__table__.c.category
@@ -113,6 +120,18 @@ def test_foreign_key_facade_derives_target_type_and_constraint() -> None:
     assert category.foreign_keys.pop().target_fullname == "category.name"
     assert category.index
     assert fallback.nullable
+
+
+def test_foreign_keys_reject_ambiguous_or_untyped_targets() -> None:
+    class Target(sql.Model, table=True):
+        id = sql.PK(int)
+        label = sql.Field(str)
+
+    with pytest.raises(ValueError, match="must be primary or unique"):
+        sql.FK(Target.label)
+    Target.__annotations__.pop("id")
+    with pytest.raises(TypeError, match="has no declared type"):
+        sql.FK(Target.id)
 
 
 @pytest.mark.parametrize(
@@ -169,11 +188,10 @@ def test_model_columns_expose_typed_aggregate_expressions() -> None:
     assert compiled(Doc.id.max()) == "max(doc.id)"
     assert compiled(Doc.id.sum(default=0)) == "coalesce(sum(doc.id), 0)"
     assert compiled(Doc.title.lower()) == "lower(doc.title)"
+    assert compiled(Doc.title.upper()) == "upper(doc.title)"
     assert compiled(Doc.title.length()) == "length(doc.title)"
     assert compiled(Doc.title.coalesce("untitled")) == "coalesce(doc.title, 'untitled')"
-    assert compiled(Doc.title.coalesce(sa.column("fallback"))) == (
-        "coalesce(doc.title, fallback)"
-    )
+    assert compiled(Doc.title.coalesce(sa.column("fallback"))) == ("coalesce(doc.title, fallback)")
     assert compiled(Doc.id.greatest(0)) == "greatest(doc.id, 0)"
     assert compiled(Doc.id.least(10)) == "least(doc.id, 10)"
     assert compiled(Doc.title.f.substr(1, 3)) == "substr(doc.title, 1, 3)"
@@ -248,7 +266,7 @@ def test_pg_enum_uses_qualified_names_and_persists_values() -> None:
     pg = Watermark.Kind.type
 
     assert Watermark.Kind.name == "watermark_kind"
-    assert Watermark.Kind.values == ("ready", "open")
+    assert Watermark.Kind.values == ["ready", "open"]
     assert pg.name == "watermark_kind"
     assert pg.enums == ["ready", "open"]
     assert Watermark.Kind.ready.name == "ready"
@@ -262,12 +280,20 @@ def test_field_infers_constraints_timestamps_and_native_enums() -> None:
     class StoredObject(sql.Model, table=True):
         id = sql.PK(int)
         size: sql.Column[sql.NonNegativeInt]
+        enabled = sql.Field(bool, default=True)
         key = sql.Field(sql.NonEmptyString, max_length=12, unique=True)
         state = sql.Field(ObjectState, default=ObjectState.ready, index=True)
         checked_at = sql.Nullable(datetime)
         inferred_optional = sql.Field(str | None)
         created_at = sql.Field(datetime, default_factory=datetime.now)
+        observed_at = sql.Field(datetime, default=datetime(2026, 1, 1))
+        touched_at = sql.Field(
+            datetime,
+            default_factory=datetime.now,
+            onupdate=sa.func.now(),
+        )
         details = sql.Field(dict, default_factory=dict, sa_type=sql.TypedJSONB)
+        tags = sql.Field(list[int], default_factory=list, sa_type=sql.TypedJSONB)
         explicit_only = sql.Field(int, default=1, server_default=None)
 
     valid = StoredObject.model_validate({"size": 0, "key": "object-key"})
@@ -284,7 +310,12 @@ def test_field_infers_constraints_timestamps_and_native_enums() -> None:
     assert valid.checked_at is None
     assert valid.inferred_optional is None
     assert StoredObject.__table__.c.inferred_optional.nullable
+    enabled_default = StoredObject.__table__.c.enabled.server_default
+    assert isinstance(enabled_default, DefaultClause)
+    assert str(enabled_default.arg) == "true"
     assert StoredObject.__table__.c.created_at.server_default is not None
+    assert StoredObject.__table__.c.observed_at.server_default is None
+    assert StoredObject.__table__.c.touched_at.onupdate is not None
     assert isinstance(StoredObject.__table__.c.details.server_default, DefaultClause)
     assert str(StoredObject.__table__.c.details.server_default.arg) == "{}"
     assert StoredObject.__table__.c.explicit_only.server_default is None

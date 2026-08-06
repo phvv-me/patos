@@ -37,9 +37,7 @@ def digest(content: bytes, algo: str = "sha256") -> bytes: ...
 
 
 @overload
-def digest(
-    content: ColumnElement[bytes], algo: str = "sha256"
-) -> ColumnElement[bytes]: ...
+def digest(content: ColumnElement[bytes], algo: str = "sha256") -> ColumnElement[bytes]: ...
 
 
 def digest(
@@ -59,9 +57,7 @@ def hex(content: bytes, algo: str = "sha256") -> str: ...
 def hex(content: ColumnElement[bytes], algo: str = "sha256") -> ColumnElement[str]: ...
 
 
-def hex(
-    content: bytes | ColumnElement[bytes], algo: str = "sha256"
-) -> str | ColumnElement[str]:
+def hex(content: bytes | ColumnElement[bytes], algo: str = "sha256") -> str | ColumnElement[str]:
     """Hash raw bytes or a PostgreSQL expression into lowercase hexadecimal text."""
     if isinstance(content, bytes):
         return digest(content, algo).hex()
@@ -73,9 +69,7 @@ def uuid8(content: bytes, algo: str = "sha256") -> UUID8: ...
 
 
 @overload
-def uuid8(
-    content: ColumnElement[bytes], algo: str = "sha256"
-) -> ColumnElement[UUID8]: ...
+def uuid8(content: ColumnElement[bytes], algo: str = "sha256") -> ColumnElement[UUID8]: ...
 
 
 def uuid8(

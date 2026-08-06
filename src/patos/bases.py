@@ -1,9 +1,12 @@
 import abc
+import hashlib
+import json
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, GetCoreSchemaHandler, GetPydanticSchema
 from pydantic.main import BaseModel
+from pydantic_core import core_schema
 
 from .flyweight import FlyweightMeta
 from .registry import Registry
@@ -18,7 +21,18 @@ if TYPE_CHECKING:
 else:
     ModelMetaclass = type(BaseModel)
 
-IGNORED_TYPES: tuple[type, ...] = (cached_property,)
+_ignored_types: tuple[type, ...] = (cached_property,)
+
+
+def _runtime_schema(
+    source_type: type,
+    handler: GetCoreSchemaHandler,
+) -> core_schema.CoreSchema:
+    """Treat one already-validated live object as an opaque runtime value."""
+    return core_schema.any_schema()
+
+
+type Runtime[T] = Annotated[T, GetPydanticSchema(_runtime_schema)]
 
 
 class Model(BaseModel):
@@ -27,7 +41,7 @@ class Model(BaseModel):
     Use for simple value objects, result structs, game entities, etc.
     """
 
-    model_config = ConfigDict(ignored_types=IGNORED_TYPES)
+    model_config = ConfigDict(extra="forbid", ignored_types=_ignored_types)
 
 
 class FrozenModel(BaseModel):
@@ -38,10 +52,29 @@ class FrozenModel(BaseModel):
     """
 
     model_config = ConfigDict(
+        extra="forbid",
         frozen=True,
         populate_by_name=True,
-        ignored_types=IGNORED_TYPES,
+        ignored_types=_ignored_types,
     )
+
+    @cached_property
+    def stable_id(self) -> int:
+        """Return a deterministic 64-bit identity for this model and its validated fields."""
+        model = self.__class__
+        payload = {
+            "model": f"{model.__module__}.{model.__qualname__}",
+            "fields": self.model_dump(mode="json", round_trip=True),
+        }
+        canonical = json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        digest = hashlib.blake2b(canonical, digest_size=8, person=b"patos-id").digest()
+        return int.from_bytes(digest)
 
 
 class FlexModel(BaseModel):
@@ -53,22 +86,19 @@ class FlexModel(BaseModel):
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
-        ignored_types=IGNORED_TYPES,
+        ignored_types=_ignored_types,
     )
 
 
-class FrozenFlexModel(BaseModel):
+class FrozenFlexModel(FrozenModel):
     """Immutable model that accepts arbitrary types.
 
-    Combines `frozen=True` with `arbitrary_types_allowed=True`. Use for frozen configs or
-    tables that hold tensor data.
+    Extends `FrozenModel` with arbitrary type support. Use when arbitrary values are the model's
+    intended data contract. Prefer field-local `Runtime[T]` on `FrozenModel` when only selected
+    fields hold already-validated callables, locks, syntax trees, tensors, or clients.
     """
 
-    model_config = ConfigDict(
-        frozen=True,
-        arbitrary_types_allowed=True,
-        ignored_types=IGNORED_TYPES,
-    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class InternedModelMeta(FlyweightMeta, ModelMetaclass):

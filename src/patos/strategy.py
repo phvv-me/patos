@@ -119,9 +119,9 @@ class Strategy[T]:
         )
 
     @property
-    def names(self) -> tuple[str, ...]:
+    def names(self) -> list[str]:
         """Registered names in insertion order."""
-        return tuple(self.factories)
+        return list(self.factories)
 
     def __contains__(self, name: str) -> bool:
         return name in self.factories

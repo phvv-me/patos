@@ -22,10 +22,10 @@ class PGEnumType(EnumType):
         return "_".join(underscore(part) for part in names)
 
     @property
-    def values(cls) -> tuple[str, ...]:
+    def values(cls) -> list[str]:
         """Return the database values in declaration order."""
         members = cast(Iterable[StrEnum], cls)
-        return tuple(str(member.value) for member in members)
+        return [str(member.value) for member in members]
 
     @property
     def type(cls) -> ENUM:
