@@ -33,7 +33,7 @@ class Arg:
             return True
         try:
             return self.value == other.value
-        except RuntimeError, ValueError, TypeError:
+        except (RuntimeError, ValueError, TypeError):
             return False
 
 

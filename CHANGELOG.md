@@ -4,6 +4,39 @@ All notable changes to patos are documented here.
 
 The format follows Keep a Changelog, and releases are cut from the version in `pyproject.toml`.
 
+## 0.0.12
+
+### Added
+
+- `OpenModel` and `FrozenOpenModel`, the bases for a payload somebody else authors. They declare
+  the fields the reader consumes and drop whatever the provider advertises beside them, which is
+  what OIDC discovery documents, OpenAI-compatible APIs and most REST providers do by design and
+  by spec. The strict bases stay strict, because a payload we author carries exactly what it
+  declares and a stray key there is a typo worth failing on.
+
+  This closes the gap 0.0.10 opened. Forbidding extras is right for our own payloads and wrong
+  for somebody else's, and with only strict bases available the second case had to be spelled as
+  a per-model `ConfigDict(extra="ignore")` that every future integration model would have to
+  remember. The one that forgot took a deployment down at boot when its identity provider began
+  advertising token introspection and back-channel logout metadata. The choice now lives in the
+  base class, where it is visible at the class statement and impossible to forget silently.
+
+  Unknown fields are dropped rather than kept, so a parsed record still carries exactly its
+  declared fields, nothing downstream can come to depend on a key the provider never promised,
+  and `stable_id` stays a function of the declared schema instead of shifting whenever an
+  upstream service adds metadata.
+
+## 0.0.11
+
+### Fixed
+
+- The core package requires Python 3.13 again rather than 3.14. Only the `sql` extra needs 3.14,
+  because `sql/templates.py` imports `string.templatelib` and `PK(UUID7)` calls `uuid.uuid7`, and
+  an extra cannot carry a floor of its own. The 3.14 requirement published in 0.0.10 excluded
+  every consumer stuck on 3.13, which is a real environment rather than a stale one, since sglang
+  publishes no CPython 3.14 wheel in any release up to 0.5.16 and a GPU serving environment built
+  on it imports `Strategy`, `Registry` and `SingletonMeta` from here. Install `patos[sql]` on 3.14.
+
 ## 0.0.10
 
 ### Added

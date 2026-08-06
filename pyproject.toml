@@ -4,16 +4,23 @@ build-backend = "hatchling.build"
 
 [project]
 name = "patos"
-version = "0.0.10"
+version = "0.0.12"
 description = "Typed Python design and dispatch patterns, pip one in or copy one in and own the file"
 readme = "README.md"
-requires-python = ">=3.14"
+# The core patterns run on 3.13, which is what the monorepo's GPU `serving` environment needs,
+# since sglang ships no CPython 3.14 wheel and that environment imports Strategy, Registry and
+# SingletonMeta. The `sql` extra is the one part that still requires 3.14, because
+# `sql/templates.py` imports `string.templatelib` (PEP 750) and `PK(UUID7)` calls `uuid.uuid7`,
+# neither of which exists before 3.14. Extras cannot carry their own floor, so install
+# `patos[sql]` on 3.14 only.
+requires-python = ">=3.13"
 license = "Apache-2.0"
 authors = [{ name = "Pedro Valois", email = "contact@phvv.me" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries",
   "Typing :: Typed",

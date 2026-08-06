@@ -77,11 +77,44 @@ class FrozenModel(BaseModel):
         return int.from_bytes(digest)
 
 
+class OpenModel(Model):
+    """Mutable model over a payload somebody else authors, keeping only the declared fields.
+
+    Use this exactly when the data comes from outside and its shape is not yours to fix, such
+    as an OIDC discovery document, an OpenAI-compatible response, or any REST provider. Those
+    formats are specified as open, so a provider may advertise more than a given reader
+    consumes and adding a field is a compatible change on its side. `Model` forbids extras
+    because a payload we author carries exactly what it declares, and a stray key there is a
+    typo worth failing on. Applying that same rule to somebody else's payload converts every
+    upstream addition into an outage, so the open bases exist to make the distinction a choice
+    of base class rather than a config incantation each model has to remember.
+
+    Unknown fields are dropped rather than kept, so the parsed object still carries exactly the
+    declared fields and nothing downstream can come to depend on a key the provider never
+    promised.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class FrozenOpenModel(FrozenModel):
+    """Immutable model over a payload somebody else authors, keeping only the declared fields.
+
+    The frozen half of `OpenModel`, and the one most integrations want, because a parsed
+    provider response is a record rather than a workspace. Dropping unknown fields also keeps
+    `stable_id` a function of what this model declares, so the identity of an unchanged
+    response survives the provider adding metadata beside it.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class FlexModel(BaseModel):
     """Mutable model that accepts arbitrary types (tensors, tokenizers, etc.).
 
     Use when fields include `torch.Tensor`, `numpy.ndarray`, `PreTrainedModel`, or other
-    types pydantic cannot validate natively.
+    types pydantic cannot validate natively. Flexibility here is about the types a field may
+    hold and never about accepting undeclared fields, which is what the open bases do.
     """
 
     model_config = ConfigDict(
