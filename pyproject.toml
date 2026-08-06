@@ -64,6 +64,11 @@ override-dependencies = ["sqlalchemy>=2.1.0b3,<3"]
 
 [tool.ruff]
 line-length = 99
+# Stays at the `sql` extra's floor rather than the core's, because a single target cannot say
+# "core is 3.13, this one extra is 3.14" and `sql/templates.py` plus `test_sql.py` genuinely need
+# 3.14 for PEP 750 t-strings. The cost is that the formatter would rewrite `except (A, B, C):`
+# into PEP 758's unparenthesized form, which 3.13 cannot parse, so the core avoids writing a
+# multi-exception `except` at all and names the tuple instead. See `flyweight.py`.
 target-version = "py314"
 extend-exclude = [".chefe"]
 

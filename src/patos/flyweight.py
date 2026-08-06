@@ -3,6 +3,13 @@ from typing import TypeVar, cast
 
 _ResultT = TypeVar("_ResultT")
 
+# Named rather than written inline as `except (RuntimeError, ValueError, TypeError):`, because
+# ruff targets 3.14 for the `sql` extra and its formatter rewrites an inline tuple into PEP 758's
+# unparenthesized form, which the 3.13 core floor cannot parse. A single name is the one spelling
+# both interpreters accept and no formatter rewrites. These are what an argument raises when its
+# `==` refuses to answer, a tensor-carrying model among them.
+_UNRESOLVABLE_EQUALITY = (RuntimeError, ValueError, TypeError)
+
 
 class Arg:
     """One flyweight key element: hashes by its argument and compares without a tensor `__eq__`.
@@ -33,7 +40,7 @@ class Arg:
             return True
         try:
             return self.value == other.value
-        except (RuntimeError, ValueError, TypeError):
+        except _UNRESOLVABLE_EQUALITY:
             return False
 
 
