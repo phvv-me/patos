@@ -7,14 +7,13 @@ name = "patos"
 version = "0.0.10"
 description = "Typed Python design and dispatch patterns, pip one in or copy one in and own the file"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 license = "Apache-2.0"
 authors = [{ name = "Pedro Valois", email = "contact@phvv.me" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
-  "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries",
   "Typing :: Typed",
@@ -69,7 +68,6 @@ project-includes = ["src", "tests", "typing"]
 search-path = ["src", "tests", "typing", "."]
 
 [tool.ty.environment]
-python = "../../.chefe/.pixi/envs/default"
 python-version = "3.14"
 root = ["src", "typing"]
 

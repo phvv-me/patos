@@ -11,7 +11,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.13", "3.14"]
+        # The source uses PEP 758's unparenthesized multi-exception `except`, PEP 750
+        # template strings, and `uuid.uuid7`, all of which need 3.14, matching
+        # `requires-python`; testing older interpreters here would fail before a single
+        # check ran.
+        python: ["3.14"]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7

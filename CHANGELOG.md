@@ -23,7 +23,11 @@ The format follows Keep a Changelog, and releases are cut from the version in `p
 - `FrozenFlexModel` extends `FrozenModel`, so it inherits `stable_id`, the forbidden extras, and
   the alias population alongside arbitrary type support.
 - `available` is renamed `is_available` so the probe reads as a question at every call site.
-- Python 3.13 is supported again; the source no longer relies on 3.14-only syntax.
+
+### Fixed
+
+- `ty` no longer points at a monorepo-local interpreter path, so the check runs in any checkout
+  with the project's own environment.
 
 ## 0.0.9
 
