@@ -1,5 +1,5 @@
 from collections.abc import Callable, Iterator
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -22,6 +22,19 @@ class StrategyError(LookupError):
     A `LookupError` so failed selection still reads as a lookup failure, without
     `KeyError`'s quoted-repr rendering mangling the message.
     """
+
+
+class Resolution[T](NamedTuple):
+    """The outcome of a cascade walk: who won and why the others did not.
+
+    The rejection log is a value rather than a log line, so a caller can
+    render why this host is on its fallback (`gold: port-22 ssh timed out,
+    won: tailnet`) instead of silently degrading.
+    """
+
+    winner: str
+    implementation: object
+    rejected: tuple[tuple[str, str], ...]
 
 
 class Strategy[T]:
@@ -117,6 +130,30 @@ class Strategy[T]:
         raise StrategyError(
             f"{self.name}: no available implementation among {sorted(self.factories)}"
         )
+
+    def cascade(self) -> Resolution[T]:
+        """Walk registrations in order, returning the winner with the rejection log.
+
+        `first_available` with receipts: every impl passed over is recorded as
+        `(name, reason)`, where the reason is the probe's exception when it
+        raised and a plain report when it returned falsy. All-rejected raises
+        `StrategyError` carrying every reason, so the failure names each link.
+        """
+        rejected: list[tuple[str, str]] = []
+        for name in self.factories:
+            impl = self.resolve(name)
+            availability = getattr(impl, "available", True)
+            try:
+                if callable(availability):
+                    availability = availability()
+            except Exception as error:
+                rejected.append((name, f"{type(error).__name__}: {error}"))
+                continue
+            if availability:
+                return Resolution(winner=name, implementation=impl, rejected=tuple(rejected))
+            rejected.append((name, "reported unavailable"))
+        reasons = "; ".join(f"{name}: {reason}" for name, reason in rejected)
+        raise StrategyError(f"{self.name}: every implementation refused, {reasons}")
 
     @property
     def names(self) -> list[str]:

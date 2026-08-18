@@ -36,7 +36,8 @@ from .pipeline import Pipeline, Reversible
 from .projection import FieldProjection, Projection
 from .registry import Registry, is_available
 from .singleton import Singleton, SingletonMeta
-from .strategy import Available, Strategy, StrategyError
+from .shared import Shared
+from .strategy import Available, Resolution, Strategy, StrategyError
 from .strflag import StrFlag
 
 try:
@@ -48,6 +49,8 @@ __all__ = [
     "Available",
     "is_available",
     "Component",
+    "Resolution",
+    "Shared",
     "Decorator",
     "DerivedCache",
     "FieldProjection",

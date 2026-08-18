@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Hashable
+from importlib.metadata import entry_points
 from typing import ClassVar, Self, cast
 
 # Split a camel name only where a new *word* starts: at a lowercase run meeting an upper
@@ -193,6 +194,21 @@ class Registry:
         raise LookupError(
             f"{cls.__name__} has no available implementation among {cls.names()}.",
         )
+
+    @classmethod
+    def load(cls, group: str) -> list[object]:
+        """Import every implementation advertised under entry-point `group`.
+
+        `__init_subclass__` only fires on import, so implementations shipped by other
+        distributions stay invisible until something imports their modules. This is that
+        something: each entry point under `group` is loaded (importing its module, which
+        enrolls its classes here), and the loaded objects are returned for callers that
+        want them. A broken plugin raises immediately rather than being skipped, so a
+        consumer wanting tolerance walks `importlib.metadata.entry_points` itself.
+
+        group: the entry-point group name providers advertise under.
+        """
+        return [point.load() for point in entry_points(group=group)]
 
     @classmethod
     def dispatch(cls, *args: object, **kwargs: object) -> Self:

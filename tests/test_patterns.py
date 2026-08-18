@@ -605,3 +605,21 @@ def test_registry_bare_annotation_does_not_suppress_derivation() -> None:
     assert Worker.name == "worker"
     assert Base.find("worker") is Worker
     assert "base" not in Base.names()
+
+
+def test_registry_load_imports_advertised_entry_points(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`load` imports each entry point under the group so its classes enroll, fail-fast."""
+    from importlib.metadata import EntryPoint
+
+    class Provider(Registry):
+        pass
+
+    point = EntryPoint(name="circle", value="patos.registry:Registry", group="fake.providers")
+    monkeypatch.setattr(
+        "patos.registry.entry_points",
+        lambda group: (point,) if group == "fake.providers" else (),
+    )
+    assert Provider.load("fake.providers") == [Registry]
+    assert Provider.load("empty.group") == []

@@ -48,7 +48,9 @@ def test_frozen_model_is_frozen_and_validates_by_name() -> None:
 
     assert Config.model_config["frozen"] is True
     assert Config.model_config["extra"] == "forbid"
-    assert Config.model_config["populate_by_name"] is True
+    assert Config.model_config["validate_by_name"] is True
+    assert Config.model_config["validate_by_alias"] is True
+    assert Config.model_config["serialize_by_alias"] is False
     assert Config(size=8).size == 8
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         Config.model_validate({"size": 8, "sizes": 9})
@@ -103,7 +105,7 @@ def test_frozen_open_model_tolerates_upstream_additions_and_stays_a_frozen_recor
 
     assert Discovery.model_config["extra"] == "ignore"
     assert Discovery.model_config["frozen"] is True
-    assert Discovery.model_config["populate_by_name"] is True
+    assert Discovery.model_config["validate_by_name"] is True
     assert isinstance(discovery, FrozenModel)
     assert discovery.jwks_uri == _DISCOVERY["jwks_uri"]
     assert discovery.model_extra is None
@@ -166,7 +168,7 @@ def test_frozen_flex_model_is_frozen_and_arbitrary() -> None:
     assert Box.model_config["frozen"] is True
     assert Box.model_config["arbitrary_types_allowed"] is True
     assert Box.model_config["extra"] == "forbid"
-    assert Box.model_config["populate_by_name"] is True
+    assert Box.model_config["validate_by_name"] is True
     holder = Holder()
     box = Box(item=holder)
     assert box.item is holder
