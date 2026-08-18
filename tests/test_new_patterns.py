@@ -1,4 +1,6 @@
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from patos import (
     Decorator,
@@ -7,6 +9,7 @@ from patos import (
     Lifecycle,
     Pipeline,
     Reversible,
+    content_key,
     type_dispatch,
 )
 
@@ -205,6 +208,19 @@ def test_derived_cache_builds_once_per_key_then_reuses() -> None:
     assert ("q", 4) in cache
     assert ("v", 2) not in cache
     assert "size=2" in repr(cache)
+
+
+@given(parts=st.lists(st.one_of(st.integers(), st.text(), st.booleans()), max_size=6))
+def test_content_key_is_a_stable_short_digest_that_moves_with_its_parts(
+    parts: list[object],
+) -> None:
+    """The same parts always key the same artifact and one more part keys a different one."""
+    key = content_key(*parts)
+
+    assert key == content_key(*parts)
+    assert len(key) == 24
+    assert set(key) <= set("0123456789abcdef")
+    assert content_key(*parts, "one more") != key
 
 
 def test_type_dispatch_routes_on_the_first_argument_type() -> None:

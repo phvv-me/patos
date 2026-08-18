@@ -1,5 +1,8 @@
 from collections.abc import Callable, Iterator
-from typing import NamedTuple, Protocol, runtime_checkable
+from functools import partial
+from typing import NamedTuple, Protocol, Self, cast, runtime_checkable
+
+from .registry import Registry
 
 
 @runtime_checkable
@@ -60,6 +63,34 @@ class Strategy[T]:
         self.name = name
         self.factories: dict[str, Callable[[], T]] = {}
         self.cache: dict[str, T] = {}
+
+    @classmethod
+    def from_registry(
+        cls,
+        root: type[Registry],
+        name: str = "strategy",
+        **factory_kwargs: object,
+    ) -> Self:
+        """A strategy whose lazy factories are `root`'s concrete implementations, keyed by name.
+
+        The bridge between the two halves of the pattern. `Registry` collects the concrete
+        classes as they are imported and `Strategy` picks one of them by name at runtime, so a
+        consumer holding a registry root gets the whole named family in one call rather than
+        hand rolling the `for impl in Root.implementations()` loop once per family. Every
+        implementation stays lazy, so only the one actually selected is ever constructed, which
+        is what keeps a family of model backed stages cheap to enumerate.
+
+        root: the registry root whose `implementations()` become the registrations, in
+            registration order, so `first_available` and `cascade` walk them by preference.
+        name: human readable label used in error messages.
+        factory_kwargs: passed to every implementation's constructor when it is first selected,
+            which is how one shared settings object reaches an entire family.
+        """
+        strategy = cls(name)
+        for implementation in root.implementations():
+            build = cast(Callable[[], T], partial(implementation, **factory_kwargs))
+            strategy.factory(implementation.name, build)
+        return strategy
 
     def register(self, name: str, impl: T) -> None:
         """Register an already-built implementation value under `name`.

@@ -29,9 +29,7 @@ def test_single_flight_coalesces_concurrent_first_builders() -> None:
 def test_zero_idle_closes_on_last_release_and_rebuilds() -> None:
     closed: list[str] = []
     counter = iter(range(10))
-    shared: Shared[str, str] = Shared(
-        lambda key: f"{key}#{next(counter)}", close=closed.append
-    )
+    shared: Shared[str, str] = Shared(lambda key: f"{key}#{next(counter)}", close=closed.append)
     with shared.acquire("a") as first, shared.acquire("a") as second:
         assert first == second == "a#0"
         assert closed == []
@@ -59,7 +57,9 @@ def test_idle_linger_reuses_until_sweep_evicts() -> None:
 
 def test_drain_closes_unheld_but_never_held_resources() -> None:
     closed: list[str] = []
-    shared: Shared[str, str] = Shared(lambda key: f"conn-{key}", close=closed.append, idle_seconds=60.0)
+    shared: Shared[str, str] = Shared(
+        lambda key: f"conn-{key}", close=closed.append, idle_seconds=60.0
+    )
     with shared.acquire("busy"):
         with shared.acquire("idle"):
             pass

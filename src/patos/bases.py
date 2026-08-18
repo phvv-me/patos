@@ -41,7 +41,13 @@ class Model(BaseModel):
     Use for simple value objects, result structs, game entities, etc.
     """
 
-    model_config = ConfigDict(extra="forbid", ignored_types=_ignored_types, validate_by_alias=True, validate_by_name=True, serialize_by_alias=False)
+    model_config = ConfigDict(
+        extra="forbid",
+        ignored_types=_ignored_types,
+        validate_by_alias=True,
+        validate_by_name=True,
+        serialize_by_alias=False,
+    )
 
 
 class FrozenModel(BaseModel):
@@ -96,7 +102,9 @@ class OpenModel(Model):
     promised.
     """
 
-    model_config = ConfigDict(extra="ignore", validate_by_alias=True, validate_by_name=True, serialize_by_alias=False)
+    model_config = ConfigDict(
+        extra="ignore", validate_by_alias=True, validate_by_name=True, serialize_by_alias=False
+    )
 
 
 class FrozenOpenModel(FrozenModel):
@@ -108,7 +116,9 @@ class FrozenOpenModel(FrozenModel):
     response survives the provider adding metadata beside it.
     """
 
-    model_config = ConfigDict(extra="ignore", validate_by_alias=True, validate_by_name=True, serialize_by_alias=False)
+    model_config = ConfigDict(
+        extra="ignore", validate_by_alias=True, validate_by_name=True, serialize_by_alias=False
+    )
 
 
 class FlexModel(BaseModel):
@@ -136,7 +146,12 @@ class FrozenFlexModel(FrozenModel):
     fields hold already-validated callables, locks, syntax trees, tensors, or clients.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, validate_by_alias=True, validate_by_name=True, serialize_by_alias=False)
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        validate_by_alias=True,
+        validate_by_name=True,
+        serialize_by_alias=False,
+    )
 
 
 class InternedModelMeta(FlyweightMeta, ModelMetaclass):

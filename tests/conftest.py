@@ -1,8 +1,15 @@
+import importlib.util
 from abc import ABC, abstractmethod
 
 import pytest
 
 from patos import Registry
+
+# `patos.torch` sits behind an optional extra, so its suite only collects where the extra is
+# installed. Skipping at collection keeps the core gate honest instead of importing torch here.
+collect_ignore = (
+    [] if all(importlib.util.find_spec(name) for name in ("numpy", "torch")) else ["test_torch.py"]
+)
 
 
 class Codec(Registry, ABC):

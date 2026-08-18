@@ -22,7 +22,7 @@ jobs:
       - uses: phvv-me/chefe/.github/actions/setup@main
         with:
           mode: uv
-          extras: dev sql
+          extras: dev sql torch
           python-version: ${{ matrix.python }}
       - run: uv run ruff check .
       - run: uv run ruff format --check .

@@ -27,7 +27,7 @@ from .bases import (
     OpenModel,
     Runtime,
 )
-from .cache import DerivedCache
+from .cache import DerivedCache, content_key
 from .decorator import Decorator
 from .dispatch import type_dispatch, value_dispatch
 from .flyweight import FlyweightMeta
@@ -35,8 +35,8 @@ from .lifecycle import IllegalTransition, Lifecycle
 from .pipeline import Pipeline, Reversible
 from .projection import FieldProjection, Projection
 from .registry import Registry, is_available
-from .singleton import Singleton, SingletonMeta
 from .shared import Shared
+from .singleton import Singleton, SingletonMeta
 from .strategy import Available, Resolution, Strategy, StrategyError
 from .strflag import StrFlag
 
@@ -49,6 +49,7 @@ __all__ = [
     "Available",
     "is_available",
     "Component",
+    "content_key",
     "Resolution",
     "Shared",
     "Decorator",

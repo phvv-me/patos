@@ -1,8 +1,9 @@
 import functools
+from abc import ABC, abstractmethod
 
 import pytest
 
-from patos import Strategy, StrategyError, StrFlag, value_dispatch
+from patos import Registry, Strategy, StrategyError, StrFlag, value_dispatch
 
 
 def test_strategy_select_resolves_default_and_errors() -> None:
@@ -28,6 +29,41 @@ def test_strategy_select_resolves_default_and_errors() -> None:
         s.select("missing")
     with pytest.raises(StrategyError):
         s.select("missing", default="also-missing")
+
+
+def test_strategy_from_registry_keys_lazy_factories_by_implementation_name() -> None:
+    """A registry root becomes a named family whose impls are built only when selected."""
+    built: list[str] = []
+
+    class Stage(Registry, ABC):
+        def __init__(self, *, workspace: str) -> None:
+            built.append(self.name)
+            self.workspace = workspace
+
+        @abstractmethod
+        def run(self) -> str: ...
+
+    class Fast(Stage):
+        def available(self) -> bool:
+            return False
+
+        def run(self) -> str:
+            return f"fast-{self.workspace}"
+
+    class Slow(Stage):
+        def run(self) -> str:
+            return f"slow-{self.workspace}"
+
+    stages: Strategy[Stage] = Strategy.from_registry(Stage, "stage", workspace="w")
+
+    assert stages.names == Stage.names() == ["fast", "slow"]
+    assert built == []  # nothing is constructed until something is selected
+    assert stages.select("fast").run() == "fast-w"
+    assert built == ["fast"]
+    assert isinstance(stages.first_available(), Slow)  # Fast declines through `Available`
+    assert stages.select("missing", default="slow").run() == "slow-w"
+    with pytest.raises(StrategyError, match="stage: no implementation"):
+        stages.select("missing")
 
 
 def test_strategy_error_is_a_lookup_error_with_clean_rendering() -> None:

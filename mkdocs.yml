@@ -66,6 +66,7 @@ nav:
           - patos/strflag.md
       - Optional extensions:
           - patos/sql.md
+          - patos/torch.md
   - Reference:
       - API: api.md
       - Release: release.md

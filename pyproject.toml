@@ -30,6 +30,15 @@ classifiers = [
 dependencies = ["pydantic>=2.13.4,<3"]
 
 [project.optional-dependencies]
+# `patos.torch` is the one namespace that touches an accelerator stack, so it stays behind an
+# extra the way `sql` does. The torch floor is deliberately loose, since nothing here reaches
+# past `manual_seed`, `finfo`, `eye` and the matmul precision switches, and a consumer already
+# pins the exact build its CUDA lane needs. numpy joins it because `seed_all` seeds numpy too
+# and torch itself does not require numpy.
+torch = [
+  "numpy>=1.26",
+  "torch>=2",
+]
 sql = [
   "inflection>=0.5.1,<0.6",
   "pgvector>=0.5,<0.6",
@@ -78,6 +87,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pyrefly]
 project-includes = ["src", "tests", "typing"]
 search-path = ["src", "tests", "typing", "."]
+# The `torch` extra is not installed in the gate, so its two imports are absent there rather
+# than wrong. Naming exactly those two keeps every other unresolved import an error.
+ignore-missing-imports = ["numpy", "torch"]
 
 [tool.ty.environment]
 python-version = "3.14"
@@ -85,6 +97,13 @@ root = ["src", "typing"]
 
 [tool.ty.src]
 include = ["src", "typing"]
+
+# Same optional-extra gap as the pyrefly setting above, scoped to the only files that import it.
+[[tool.ty.overrides]]
+include = ["src/patos/torch/**"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
 
 [tool.pytest.ini_options]
 addopts = "-q -ra --strict-markers"

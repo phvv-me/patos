@@ -4,6 +4,30 @@ All notable changes to patos are documented here.
 
 The format follows Keep a Changelog, and releases are cut from the version in `pyproject.toml`.
 
+## Unreleased
+
+### Added
+
+- `patos.torch`, behind a new `torch` extra, holding the run-wide RNG and precision controls
+  (`seed_all`, `seeded`, `configure_torch`, `setup`) and the dtype-aware tensor helpers (`eps`,
+  `tiny`, `eye_like`, `fp32_matmul_precision`). Torch is imported only inside that namespace, so
+  the core stays pydantic-only and a consumer without the extra never pays for it.
+
+  `seeded` is the one genuinely new name. The `fork_rng(devices=[])` plus `manual_seed` idiom it
+  wraps had been copied nine times across one research tree, and every copy is a place where a
+  reproducible draw can quietly start advancing the global stream that everything after it reads.
+
+- `content_key`, the hex digest that keys a cached artifact by the content determining it. It
+  lives beside `DerivedCache` as the on-disk counterpart to that in-memory key, and it is dtype
+  free, so it stays in the core rather than in the torch extra.
+
+- `Strategy.from_registry(root, name, **factory_kwargs)`, the bridge between the two halves of the
+  pattern. `Registry` collects the concrete classes as they are imported and `Strategy` picks one
+  by name at runtime, and until now every consumer joined them by hand with the same
+  `for impl in Root.implementations()` loop, once per family. One codebase carried nine copies of
+  it in a single constructor. Registrations stay lazy, so only the implementation actually
+  selected is ever built.
+
 ## 0.0.12
 
 ### Added

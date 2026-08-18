@@ -40,7 +40,8 @@ def test_cascade_all_rejected_names_every_reason() -> None:
     transports: Strategy[_Link] = Strategy("transport")
     transports.register("a", _Link(up=False))
     transports.register("b", _Link(up=None, boom="refused"))
-    with pytest.raises(StrategyError, match="a: reported unavailable; b: ConnectionError: refused"):
+    rejections = "a: reported unavailable; b: ConnectionError: refused"
+    with pytest.raises(StrategyError, match=rejections):
         transports.cascade()
 
 
