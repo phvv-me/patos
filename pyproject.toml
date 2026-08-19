@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "patos"
-version = "0.0.12"
+version = "0.0.13"
 description = "Typed Python design and dispatch patterns, pip one in or copy one in and own the file"
 readme = "README.md"
 # The core patterns run on 3.13, which is what the monorepo's GPU `serving` environment needs,

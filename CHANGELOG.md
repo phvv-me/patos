@@ -8,6 +8,11 @@ The format follows Keep a Changelog, and releases are cut from the version in `p
 
 ### Added
 
+
+## 0.0.13
+
+### Added
+
 - `patos.torch`, behind a new `torch` extra, holding the run-wide RNG and precision controls
   (`seed_all`, `seeded`, `configure_torch`, `setup`) and the dtype-aware tensor helpers (`eps`,
   `tiny`, `eye_like`, `fp32_matmul_precision`). Torch is imported only inside that namespace, so
@@ -27,6 +32,18 @@ The format follows Keep a Changelog, and releases are cut from the version in `p
   `for impl in Root.implementations()` loop, once per family. One codebase carried nine copies of
   it in a single constructor. Registrations stay lazy, so only the implementation actually
   selected is ever built.
+
+### Changed
+
+- `Shared` keeps one piece of slot state instead of two. A slot used to carry both a `built` flag
+  and an optional resource, so the yielded handle read as `R | None` and needed a suppression to
+  claim otherwise. The resource itself now says whether the slot is filled, which drops the
+  suppression, the flag and the chance of the two disagreeing.
+
+- CI bootstraps with the official `astral-sh/setup-uv` action and plain `uv run` steps rather than
+  a shared action hosted in another repository. A package that ships to PyPI has to be buildable
+  from its own checkout, and a shared bootstrap made every release depend on somebody else's
+  default branch.
 
 ## 0.0.12
 

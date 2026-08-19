@@ -9,11 +9,10 @@ from contextlib import contextmanager
 class _Slot[R]:
     """One keyed resource with its refcount and idle bookkeeping."""
 
-    __slots__ = ("built", "holders", "idle_since", "lock", "resource")
+    __slots__ = ("holders", "idle_since", "lock", "resource")
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.built = False
         self.resource: R | None = None
         self.holders = 0
         self.idle_since = 0.0
@@ -40,7 +39,8 @@ class Shared[K, R]:
         close: Callable[[R], None] | None = None,
         idle_seconds: float = 0.0,
     ) -> None:
-        """build: constructs the resource for a key, called once per key at a time.
+        """build: constructs the resource for a key, called once per key at a time, and
+        returns the resource itself, never `None`, which is how an empty slot reads.
 
         close: releases a resource, called under the slot lock when evicted.
         idle_seconds: how long an unheld resource lingers before closing,
@@ -60,13 +60,12 @@ class Shared[K, R]:
         """
         slot = self.__slot(key)
         with slot.lock:
-            if not slot.built:
+            if slot.resource is None:
                 slot.resource = self.build(key)
-                slot.built = True
             slot.holders += 1
             resource = slot.resource
         try:
-            yield resource  # type: ignore[misc]  # built is True so resource is R
+            yield resource
         finally:
             with slot.lock:
                 slot.holders -= 1
@@ -80,7 +79,7 @@ class Shared[K, R]:
             slots = list(self.slots.values())
         for slot in slots:
             with slot.lock:
-                if slot.built and slot.holders == 0:
+                if slot.resource is not None and slot.holders == 0:
                     self.__evict(slot)
 
     def sweep(self) -> int:
@@ -95,15 +94,13 @@ class Shared[K, R]:
             slots = list(self.slots.values())
         for slot in slots:
             with slot.lock:
-                if slot.built and slot.holders == 0 and slot.idle_since <= deadline:
+                if slot.resource is not None and slot.holders == 0 and slot.idle_since <= deadline:
                     self.__evict(slot)
                     evicted += 1
         return evicted
 
     def __evict(self, slot: _Slot[R]) -> None:
-        resource = slot.resource
-        slot.built = False
-        slot.resource = None
+        resource, slot.resource = slot.resource, None
         if self.close is not None and resource is not None:
             self.close(resource)
 
