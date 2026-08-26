@@ -15,9 +15,6 @@ site/
 dist/
 build/
 
-# chefe (compiled manifests + provisioned env)
-.chefe/
-
 # python
 __pycache__/
 *.py[cod]
