@@ -10,6 +10,7 @@ __lazy_modules__ = {
     "patos.pipeline",
     "patos.projection",
     "patos.registry",
+    "patos.registration",
     "patos.singleton",
     "patos.strategy",
     "patos.strflag",
@@ -34,6 +35,7 @@ from .flyweight import FlyweightMeta
 from .lifecycle import IllegalTransition, Lifecycle
 from .pipeline import Pipeline, Reversible
 from .projection import FieldProjection, Projection
+from .registration import SourceRegistration
 from .registry import Registry, is_available
 from .shared import Shared
 from .singleton import Singleton, SingletonMeta
@@ -75,6 +77,7 @@ __all__ = [
     "SingletonMeta",
     "Strategy",
     "StrategyError",
+    "SourceRegistration",
     "StrFlag",
     "type_dispatch",
     "value_dispatch",
