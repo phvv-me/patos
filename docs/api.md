@@ -77,6 +77,23 @@ from patos import sql
 |---|---|---|
 | [strflag](patos/strflag.md) | `StrFlag` | an enum `Flag` whose members carry a literal string, OR-combinable and iterable |
 
+### Research registration
+
+| pato | exports | what it does |
+|---|---|---|
+| registration | `SourceRegistration`, `statement_bytes`, `sha256_text_file`, `sha256_text_sources` | seal a research node against the exact source set that governs its run |
+
+`SourceRegistration(repository, node, sources)` hashes every source as
+`relative POSIX path \0 LF-normalized bytes \0`, ordered by path, and `verify()` checks the
+recomputed digest against the single `registration_sha256` field in the node's front matter.
+
+The node contributes its **statement** rather than its whole file: the text from the first `## `
+heading after the front matter up to, but excluding, the first `## Evidence`, `## Ledger` or
+`## Log` heading, matched without regard to case. Front matter stays outside the seal entirely, so
+a node may settle, rewrite `status`, gain a `date` and grow a log without breaking the seal, while
+any edit to the registered claim still breaks it. `statement_bytes(path)` exposes exactly those
+bytes so a node can be re-sealed from a script.
+
 ### Optional extensions
 
 | extension | exports | what it does |
