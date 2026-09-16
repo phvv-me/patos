@@ -77,6 +77,15 @@ from patos import sql
 |---|---|---|
 | [strflag](patos/strflag.md) | `StrFlag` | an enum `Flag` whose members carry a literal string, OR-combinable and iterable |
 
+### Research registration
+
+`SourceRegistration(repository=..., node=..., sources=...)` exposes `digest()` and
+`verify()`. The node must belong to the explicit source set. Verification checks its
+single `registration_sha256` frontmatter field. The node's statement ends before
+Evidence, Ledger, or Log; all other files contribute their full LF-normalized bytes.
+Missing, duplicate, and outside-repository paths fail. Use this shared implementation
+instead of copying registration hashing into an experiment.
+
 ### Optional extensions
 
 | extension | exports | what it does |

@@ -63,6 +63,16 @@ from patos import sql
 |---|---|---|
 | `StrFlag` | an enum `Flag` whose members carry a literal string, OR-combinable and iterable | [docs](https://phvv.me/patos/patos/strflag/) |
 
+### Research registration
+
+`SourceRegistration` binds a research node to its governing source files. Its seal
+uses repository-relative POSIX paths and LF-normalized bytes; the node contributes
+only its statement (first second-level heading through the first Evidence, Ledger,
+or Log section). Settlement metadata can change without altering the registered claim.
+`statement_bytes`, `sha256_text_file`, and `sha256_text_sources` expose the same
+portable representation. This API matches the September 10 upstream registration
+implementation.
+
 ### Optional extensions
 
 | namespace | description | docs |
