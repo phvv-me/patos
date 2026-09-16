@@ -17,6 +17,6 @@ repos:
     hooks:
       - id: typecheck
         name: typecheck
-        entry: chefe run typecheck
+        entry: bash -c 'uv run pyrefly check && uv run ty check --error-on-warning'
         language: system
         pass_filenames: false

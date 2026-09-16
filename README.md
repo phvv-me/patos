@@ -65,13 +65,19 @@ from patos import sql
 
 ### Research registration
 
-`SourceRegistration` binds a research node to its governing source files. Its seal
-uses repository-relative POSIX paths and LF-normalized bytes; the node contributes
-only its statement (first second-level heading through the first Evidence, Ledger,
-or Log section). Settlement metadata can change without altering the registered claim.
-`statement_bytes`, `sha256_text_file`, and `sha256_text_sources` expose the same
-portable representation. This API matches the September 10 upstream registration
-implementation.
+| pato | description | docs |
+|---|---|---|
+| `SourceRegistration` | binds one research node to the exact source set governing a run and seals it | |
+| `statement_bytes` | the sealed statement of a node file, front matter and settlement sections excluded | |
+| `sha256_text_file`, `sha256_text_sources` | checkout-independent digests of registered text | |
+
+The seal covers the node's **statement** and the whole bytes of every other registered source. The
+statement starts at the first `## ` heading after the front matter and ends before the first
+`## Evidence`, `## Ledger` or `## Log` heading, matched without regard to case. Front matter is
+never sealed, so `status`, `date` and the `registration_sha256` field itself move freely, and a
+node that settles and appends to its log still verifies against the claim it was registered under.
+Every source is hashed as `relative POSIX path \0 LF-normalized bytes \0`, ordered by path, which
+keeps one seal identical on Windows and POSIX checkouts alike.
 
 ### Optional extensions
 

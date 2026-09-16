@@ -79,7 +79,6 @@ line-length = 99
 # into PEP 758's unparenthesized form, which 3.13 cannot parse, so the core avoids writing a
 # multi-exception `except` at all and names the tuple instead. See `flyweight.py`.
 target-version = "py314"
-extend-exclude = [".chefe"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
