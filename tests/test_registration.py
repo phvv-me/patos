@@ -1,8 +1,9 @@
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
-from patos import SourceRegistration, sha256_text_sources, statement_bytes
+from patos import SourceRegistration, sha256_text_file, sha256_text_sources, statement_bytes
 
 _SEAL = "registration_sha256"
 
@@ -132,6 +133,14 @@ def test_the_seal_is_identical_across_lf_and_crlf_checkouts(tmp_path: Path) -> N
 
     assert registration.digest() == lf
     assert sha256_text_sources(registration.sources, repository=tmp_path)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_single_file_digest_uses_canonical_lf_bytes(tmp_path: Path, newline: str) -> None:
+    """A file digest names the same source in either checkout representation."""
+    path = _write(tmp_path / "run.py", "VALUE = 1\n", newline=newline)
+
+    assert sha256_text_file(path) == sha256(b"VALUE = 1\n").hexdigest()
 
 
 def test_registered_sources_must_be_whole_and_include_the_node(tmp_path: Path) -> None:

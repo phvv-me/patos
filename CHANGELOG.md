@@ -4,10 +4,23 @@ All notable changes to patos are documented here.
 
 The format follows Keep a Changelog, and releases are cut from the version in `pyproject.toml`.
 
-## Unreleased
+## 0.0.14
 
 ### Added
 
+- `SourceRegistration`, a frozen model that binds a research node to its governing
+  source files and verifies the recorded SHA-256 seal. Paths are repository-relative,
+  text uses LF-normalized bytes, and duplicate or missing sources are rejected.
+- Portable text-digest helpers for individual files and ordered source sets.
+
+### Changed
+
+- Research-node seals cover statement sections while excluding front matter and
+  settlement sections, allowing evidence and status updates without changing the
+  registered claim.
+- Release documentation uses uv, and the retired chefe pre-commit hook is removed.
+- Ruff formatting excludes Markdown so it preserves MkDocs include directives and
+  deliberate example alignment.
 
 ## 0.0.13
 
