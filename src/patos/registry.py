@@ -21,7 +21,7 @@ def is_available(impl: type) -> bool:
     `is_available()` (mainboard's tracer convention) or, failing that, an `available()` the class
     exposes (a classmethod or staticmethod), calling whichever it finds. A class declaring neither
     is treated as always available, so a plain fallback needs no boilerplate to be the catch-all.
-    A bound instance method (atpx's `Engine.available(self)`) is not callable on the bare class, so
+    A bound instance method (`available(self)`) is not callable on the bare class, so
     such a consumer passes its own `probe` to `first_available` instead of relying on this default.
 
     impl: the implementation class being probed.
@@ -179,8 +179,8 @@ class Registry:
     ) -> type[Self]:
         """The first concrete implementation whose availability `probe` passes, raising on none.
 
-        The "pick the first thing that works" selection mainboard's tracer detect and atpx's
-        engine choice both hand-roll: walk `implementations()` in registration (preference) order
+        The "pick the first thing that works" selection mainboard's tracer detection would
+        otherwise hand-roll: walk `implementations()` in registration (preference) order
         and return the first the host can actually run. The default `probe` reads an `available()`
         or `is_available()` method (the `Available` convention `Strategy` shares), counting an
         implementation without one as always available, so a plain fallback registered last is the
