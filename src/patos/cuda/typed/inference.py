@@ -13,7 +13,7 @@ from .declarations import (
     Declared,
     Evaluated,
     Kind,
-    Literal,
+    IntLiteral,
     Record,
     is_integer,
     is_scalar,
@@ -46,11 +46,11 @@ class Inference:
             case ast.Constant(value=bool()):
                 return bool
             case ast.Constant(value=int() as value):
-                return Literal(value)
+                return IntLiteral(value)
             case ast.UnaryOp(op=ast.USub(), operand=ast.Constant(value=int() as value)) if (
                 not isinstance(value, bool)
             ):
-                return Literal(-value)
+                return IntLiteral(-value)
             case ast.Name(id=name) if name in kinds:
                 return kinds[name]
             case ast.Attribute(value=ast.Name(id=name), attr=field) if isinstance(
@@ -89,11 +89,11 @@ class Inference:
             case ast.BinOp(left=left, op=op, right=right):
                 left, right = self.kind(left, kinds), self.kind(right, kinds)
                 if (
-                    isinstance(left, Literal)
-                    and isinstance(right, Literal)
+                    isinstance(left, IntLiteral)
+                    and isinstance(right, IntLiteral)
                     and type(op) in _FOLDED
                 ):
-                    return Literal(_FOLDED[type(op)](left.value, right.value))
+                    return IntLiteral(_FOLDED[type(op)](left.value, right.value))
                 return operated(op, left, right)
             case ast.Compare() | ast.UnaryOp(op=ast.Not()):
                 return bool
@@ -104,7 +104,7 @@ class Inference:
                 kind = self.kind(body, kinds)
                 return (
                     kind
-                    if kind == self.kind(orelse, kinds) and not isinstance(kind, Literal)
+                    if kind == self.kind(orelse, kinds) and not isinstance(kind, IntLiteral)
                     else None
                 )
         return None

@@ -23,7 +23,7 @@ from numba import types
 from numba.core.typing import templates
 from numba.cuda.cudadecl import registry
 
-from .declarations import Declared, Kind, Literal, is_integer
+from .declarations import Declared, Kind, IntLiteral, is_integer
 
 _ARITHMETIC = (
     operator.add, operator.sub, operator.mul, operator.floordiv, operator.mod,
@@ -42,9 +42,9 @@ def meet(left: Declared, right: Declared) -> type[np.integer] | None:
     None leaves the pair to Numba's own typing.
     """
     left, right = _promoted(left), _promoted(right)
-    if is_integer(left) and isinstance(right, Literal):
+    if is_integer(left) and isinstance(right, IntLiteral):
         return left if _is_within(right.value, left) else None
-    if is_integer(right) and isinstance(left, Literal):
+    if is_integer(right) and isinstance(left, IntLiteral):
         return right if _is_within(left.value, right) else None
     if is_integer(left) and is_integer(right) and _is_signed(left) != _is_signed(right):
         unsigned, signed = (right, left) if _is_signed(left) else (left, right)
@@ -87,7 +87,7 @@ def met(left: types.Type, right: types.Type) -> types.Integer | None:
 def _kind_of(value: types.Type) -> Kind:
     """What the checker calls a Numba type: an int literal's value, or an integer's NumPy type."""
     if isinstance(value, types.IntegerLiteral):
-        return Literal(value.literal_value)
+        return IntLiteral(value.literal_value)
     if isinstance(value, types.Integer):
         return np.dtype(f"{'i' if value.signed else 'u'}{value.bitwidth // 8}").type
     return None
@@ -111,9 +111,9 @@ def _shifted(left: Declared, right: Declared) -> Kind:
     if met is not None and np.dtype(met).itemsize == 8:
         return met
     # Numba shifts in 64 bits, keeping the signedness of the value shifted.
-    if isinstance(left, Literal):
-        return np.int64 if is_integer(right) or isinstance(right, Literal) else None
-    if is_integer(left) and (is_integer(right) or isinstance(right, Literal)):
+    if isinstance(left, IntLiteral):
+        return np.int64 if is_integer(right) or isinstance(right, IntLiteral) else None
+    if is_integer(left) and (is_integer(right) or isinstance(right, IntLiteral)):
         return np.int64 if _is_signed(left) else np.uint64
     return None
 

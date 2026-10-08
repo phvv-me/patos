@@ -2,8 +2,8 @@
 passed to a kernel as one argument of their own device type."""
 
 import annotationlib
-from collections.abc import Collection, Mapping
-from functools import cache
+from collections.abc import Callable, Collection, Mapping
+from functools import cache, partial
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import cupy as cp
@@ -70,21 +70,27 @@ class Struct:
         if repeated := given.keys() & named.keys():
             raise TypeError(f"{cls.__name__} given {', '.join(repeated)} twice")
         given |= named
-        if unknown := given.keys() - set(fields):
+        if unknown := given.keys() - cls.declarations().keys():
             raise TypeError(f"{cls.__name__} has no field {', '.join(sorted(unknown))}")
         given = cls.__record_defaults__ | given
         problems = [f"{name} is missing" for name in fields if name not in given]
-        for name, kind in cls.declarations().items():
+        held = self.__dict__
+        for name, receive in cls._receivers():
             if name not in given:
                 continue
             try:
-                given[name] = _received(kind, given[name])
+                held[name] = receive(given[name])
             except (TypeError, ValueError, OverflowError) as error:
                 problems.append(f"{name} {error}")
         if problems:
             raise TypeError(f"{cls.__name__}: {'; '.join(problems)}")
-        self.__dict__.update((name, given[name]) for name in fields)
         object.__setattr__(self, "_argument", None)
+
+    @classmethod
+    @cache
+    def _receivers(cls) -> tuple[tuple[str, Callable[[Value], Value]], ...]:
+        """How each field, in order, takes a value: converted, checked or passed as it is."""
+        return tuple((name, partial(_received, kind)) for name, kind in cls.declarations().items())
 
     @classmethod
     @cache
@@ -112,19 +118,30 @@ class Struct:
         in the dtype it declares, zero-filled when `zeroed` names it; every other field is given
         as it is.
         """
-        kinds = cls.declarations()
+        roles = cls._roles()
         sized = {
             name: int(value)
             for name, value in values.items()
-            if isinstance(value, int | np.integer) and isinstance(kinds[name], ArrayOf)
+            if name in roles and isinstance(value, int | np.integer)
         }
         if stray := set(zeroed) - sized.keys():
             raise TypeError(f"{cls.__name__} zeroes {', '.join(sorted(stray))}, given no size")
-        role = f"{cls.__module__}.{cls.__qualname__}"
         for name, size in sized.items():
+            role, dtype = roles[name]
             taken = workspace.zeros if name in zeroed else workspace.take
-            values[name] = taken(f"{role}.{name}", size, _element(kinds[name]))
+            values[name] = taken(role, size, dtype)
         return cls(**values)
+
+    @classmethod
+    @cache
+    def _roles(cls) -> dict[str, tuple[str, np.dtype]]:
+        """The workspace role and dtype of each array field a size can take."""
+        prefix = f"{cls.__module__}.{cls.__qualname__}"
+        return {
+            name: (f"{prefix}.{name}", np.dtype(kind.element))
+            for name, kind in cls.declarations().items()
+            if isinstance(kind, ArrayOf) and kind.concrete
+        }
 
     def __kernel_argument__(self) -> Argument:
         """What a kernel receives for this record, marshalled on its first launch."""
@@ -134,8 +151,10 @@ class Struct:
             for name, kind in self.declarations().items():
                 if isinstance(kind, ConstantOf):
                     constants.append((name, getattr(self, name)))
-                else:
-                    fields[name] = argument(getattr(self, name))
+                    continue
+                fields[name] = argument(getattr(self, name))
+                if isinstance(kind, ArrayOf) and fields[name][0].layout != "C":
+                    raise TypeError(f"{type(self).__name__}.{name} is strided, not contiguous")
             held = record_argument(type(self), fields, tuple(constants))
             object.__setattr__(self, "_argument", held)
         return held
@@ -181,20 +200,14 @@ def _received(kind: Declared, value: Value) -> Value:
 
 
 def _check_array(kind: ArrayOf, value: Value) -> None:
-    """Raise `TypeError` unless `value` is a contiguous array of what `kind` declares."""
+    """Raise `TypeError` unless `value` is an array of what `kind` declares.
+
+    Contiguity is checked where the record marshals, which reads every array's layout anyway.
+    """
     dtype, shape = getattr(value, "dtype", None), getattr(value, "shape", None)
     if dtype is None or shape is None or not kind.admits(dtype, len(shape)):
         held = type(value).__name__ if dtype is None or shape is None else f"{dtype}{list(shape)}"
         raise TypeError(f"is {held}, not the {named(kind)} declared")
-    if isinstance(value, np.ndarray | cp.ndarray) and not value.flags.c_contiguous:
-        raise TypeError(f"is strided, where {named(kind)} is a contiguous array")
-
-
-def _element(kind: Declared) -> type[np.number]:
-    """The dtype an array field is taken in, which only a concrete element names."""
-    if isinstance(kind, ArrayOf) and kind.concrete:
-        return kind.element
-    raise TypeError(f"a {named(kind)} field has no one dtype to take")
 
 
 def _shown(value: Value) -> str:

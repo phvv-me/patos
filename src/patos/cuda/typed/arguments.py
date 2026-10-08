@@ -93,11 +93,17 @@ def _array(value: cp.ndarray | _Interfaced) -> Argument:
     itemsize = dtype.itemsize
     if len(shape) == 1:
         strides = strides or (itemsize,)
-        kind = _array_type(dtype, 1, strides[0] == itemsize)
+        kind = _array_type(dtype, 1, shape[0] <= 1 or strides[0] == itemsize)
         return kind, (0, 0, shape[0], itemsize, pointer, shape[0], strides[0])
     contiguous = _contiguous_strides(shape, itemsize)
     strides = strides or contiguous
-    kind = _array_type(dtype, len(shape), strides == contiguous)
+    # As numpy's flags read it, a dimension of one element strides nowhere and an empty array
+    # is contiguous whatever its strides.
+    laid = 0 in shape or all(
+        extent <= 1 or stride == step
+        for extent, stride, step in zip(shape, strides, contiguous, strict=True)
+    )
+    kind = _array_type(dtype, len(shape), laid)
     return kind, (0, 0, math.prod(shape), itemsize, pointer, *shape, *strides)
 
 

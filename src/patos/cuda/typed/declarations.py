@@ -14,12 +14,12 @@ from typing import Protocol, TypeAliasType, TypeIs, TypeVar, final, get_args, ge
 import numpy as np
 from numba import types
 
-from .scalars import ArrayOf, ConstantOf, canonical
+from .scalars import SPELLINGS, ArrayOf, ConstantOf, canonical
 
 
 @final
 @dataclass(frozen=True)
-class Literal:
+class IntLiteral:
     """An int constant written in the function body, taking the type of the integer it meets."""
 
     value: int
@@ -54,7 +54,7 @@ type Evaluated = (
     | None
 )
 # What a reading knows of a value: its scalar type, `bool`, a literal, or None for unknown.
-type Kind = type[np.generic] | type[bool] | Literal | None
+type Kind = type[np.generic] | type[bool] | IntLiteral | None
 # What an annotation declares: a kind, an array, a record, or a tuple of these.
 type Declared = Kind | ArrayOf | ConstantOf | Record | tuple[Declared, ...]
 type Returns = Declared | type[None]
@@ -69,12 +69,6 @@ class Signature:
 
     parameters: tuple[Declared, ...]
     returns: Returns
-
-
-_SHORT: dict[Returns, str] = {
-    np.int16: "i16", np.int32: "i32", np.int64: "i64", np.uint8: "u8", np.uint16: "u16",
-    np.uint32: "u32", np.uint64: "u64",
-}  # fmt: skip
 
 
 class _Recorded(Protocol):
@@ -101,7 +95,9 @@ def named(kind: Returns) -> str:
             return f"{named(kind.element)}[{', '.join(['int'] * kind.ndim)}]"
         case tuple():
             return f"tuple[{', '.join(named(element) for element in kind)}]"
-    return _SHORT.get(kind) or getattr(kind, "__name__", str(kind))
+        case type():
+            return SPELLINGS.get(kind, kind.__name__)
+    return str(kind)
 
 
 def unaliased(value: Evaluated) -> Evaluated:
@@ -140,7 +136,10 @@ def numba_type(declared: Returns) -> types.Type | None:
     return types.boolean if declared is bool else None
 
 
-_SCALARS = frozenset(_SHORT) | {np.int8, np.float16, np.float32, np.float64}
+_SCALARS = frozenset(
+    {np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64}
+    | {np.float16, np.float32, np.float64}
+)
 
 
 def _is_record(value: Subject) -> TypeIs[type[_Recorded]]:

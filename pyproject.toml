@@ -184,7 +184,6 @@ exclude = [
 exclude = [
   "src/patos/cuda/runtime/memory.py",
   "src/patos/cuda/primitives/hash.py",
-  "src/patos/cuda/runtime/launch.py",
   "src/patos/cuda/runtime/streams.py",
 ]
 
@@ -201,30 +200,15 @@ exclude = ["src/patos/cuda/primitives/hash.py"]
 [tool.mcmr.rules."PY-CONS0002"]
 exclude = ["src/patos/cuda/primitives/__init__.py"]
 
-# numba-cuda 0.30 keeps no public handle to a compiled kernel or its argument marshalling, which
-# the cached launcher is made of; the launcher tests pin its cache keys and its registry. A named
-# tuple's own API is underscored (`_replace`, `_fields`), which the `Struct` tests call.
-[tool.mcmr.rules."ALL-ENCA0001"]
-exclude = ["src/patos/cuda/runtime/launch.py", "tests/test_cuda_runtime.py", "tests/test_cuda_types.py"]
-
-# numba-cuda keeps `map_layout` four modules deep, and the launcher tests stand a fake module in
-# at exactly that path. The tests reach the typing rules and the scratch memory in the modules that
-# define them, since a package re-export would import the CUDA stack before the fakes stand in.
+# The typed tests pin the arithmetic rules, the declarations and the marshalling in the modules
+# that define them, which the package surface does not re-export.
 [tool.mcmr.rules."PY-IMPO0005"]
-exclude = ["src/patos/cuda/runtime/launch.py", "tests/test_cuda_runtime.py", "tests/test_cuda_types.py"]
+exclude = ["tests/test_cuda_types.py"]
 
-# `Specialization._viewed` falls back on the interface version inside its `except`, and moving a
-# statement out would change the protected transaction; `fake_runtime` has to drop every module it
-# imported meanwhile in a `finally`.
-[tool.mcmr.rules."PY-EXCE0002"]
-exclude = ["src/patos/cuda/runtime/launch.py", "tests/test_cuda_runtime.py"]
-
-# A launch signature is a dict key, a declared tuple type is a tuple reading that `isinstance`
-# tells from every other, and `_Signature` is frozen: these tuples are the domain, not a choice
-# of collection.
+# A declared tuple type is a tuple reading that `isinstance` tells from every other, and
+# `Signature` is frozen: these tuples are the domain, not a choice of collection.
 [tool.mcmr.rules."PY-COLL0004"]
 exclude = [
-  "src/patos/cuda/runtime/launch.py",
   "src/patos/cuda/typed/declarations.py",
   "src/patos/cuda/typed/decorators.py",
   "src/patos/cuda/typed/intrinsics.py",
@@ -232,18 +216,16 @@ exclude = [
   "src/patos/cuda/typed/rewrite.py",
 ]
 
-# The launcher keys on tuple arguments and the type reader meets AST constants as `bool` and `int`:
-# both are representation boundaries.
+# The type reader meets AST constants as `bool` and `int`, a representation boundary.
 [tool.mcmr.rules."PY-INTE0001"]
 exclude = [
-  "src/patos/cuda/runtime/launch.py",
   "src/patos/cuda/typed/declarations.py",
   "src/patos/cuda/typed/reading.py",
   "src/patos/cuda/typed/rewrite.py",
 ]
 
 # A reading is built, hashed and compared per expression while a decorator runs, and the tests
-# build `_Literal(1)` positionally, so pydantic validation and keyword-only fields buy nothing.
+# build `IntLiteral(1)` positionally, so pydantic validation and keyword-only fields buy nothing.
 [tool.mcmr.rules."PY-MODE0005"]
 exclude = ["src/patos/cuda/typed/declarations.py"]
 
@@ -263,45 +245,37 @@ exclude = [
 [tool.mcmr.rules."ALL-PARA0003"]
 exclude = ["src/patos/cuda/primitives/warp.py"]
 
-# The test modules keep their fakes and helpers beside the scenarios that use them.
+# The typed test module keeps its records, device templates and helpers beside the scenarios
+# that use them.
 [tool.mcmr.rules."ALL-MODU0001"]
-exclude = ["tests/test_cuda_runtime.py", "tests/test_cuda_types.py"]
+exclude = ["tests/test_cuda_types.py"]
 
 # The same closed families: each module keeps its record or protocol beside the one class using it,
 # the declaration forms sit together, an error beside the reading that raises it, the AST pass
 # beside the rewrite driving it, and the record metaclass beside its one base.
 [tool.mcmr.rules."ALL-MODU0005"]
 exclude = [
-  "src/patos/cuda/runtime/launch.py",
   "src/patos/cuda/runtime/memory.py",
   "src/patos/cuda/runtime/streams.py",
   "src/patos/cuda/typed/declarations.py",
   "src/patos/cuda/typed/reading.py",
   "src/patos/cuda/typed/rewrite.py",
   "src/patos/cuda/typed/struct.py",
-  "tests/test_cuda_runtime.py",
   "tests/test_cuda_types.py",
 ]
 
 # The same, counted in statements.
 [tool.mcmr.rules."ALL-MODU0006"]
-exclude = ["tests/test_cuda_runtime.py", "tests/test_cuda_types.py"]
+exclude = ["tests/test_cuda_types.py"]
 
 # The house testing policy is maximum coverage from minimum test count: a test is one dense
 # scenario, and its helpers and fakes share the module. Splitting to the ceilings would multiply
 # the tests.
 [tool.mcmr.rules."ALL-TEST0003"]
-exclude = ["tests/test_cuda_runtime.py", "tests/test_cuda_types.py"]
+exclude = ["tests/test_cuda_types.py"]
 
-# The same policy: a runtime test is the whole story of one launcher behavior.
-[tool.mcmr.rules."ALL-FUNC0001"]
-exclude = ["tests/test_cuda_runtime.py"]
-
-[tool.mcmr.rules."PY-TEST0012"]
-exclude = ["tests/test_cuda_runtime.py"]
-
-# `defined` compiles a template into a namespace, the only way to hand `inspect.getsource` a
-# function that carries the annotations under test.
+# `executed` compiles a template into a namespace, the only way to hand `inspect.getsource` device
+# code that carries the annotations under test, and the members test reads a host class's `vars`.
 [tool.mcmr.rules."ALL-FUNC0011"]
 exclude = ["tests/test_cuda_types.py"]
 

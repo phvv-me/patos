@@ -86,18 +86,25 @@ def converted(
         return kind(int(value))
     if isinstance(value, float | np.floating) and not issubclass(kind, np.integer):
         return cast("np.number", np.asarray(value, dtype=kind)[()])
-    raise TypeError(f"is a {type(value).__name__}, not a {kind.__name__}")
+    spelled = SPELLINGS.get(kind, kind.__name__)
+    raise TypeError(f"is a {type(value).__name__}, not the {spelled} declared")
 
 
 _CONCRETE = frozenset(np.sctypeDict.values())
+# How patos spells the numpy types it names, in messages as in annotations.
+SPELLINGS: dict[type, str] = {
+    np.int16: "i16", np.int32: "i32", np.int64: "i64", np.uint8: "u8", np.uint16: "u16",
+    np.uint32: "u32", np.uint64: "u64", np.unsignedinteger: "unsigned", np.number: "number",
+}  # fmt: skip
 
 if TYPE_CHECKING:
 
-    class Numeric[T: np.number, *Shape]:
+    class Numeric[T, *Shape]:
         """What a type checker knows of a numeric value or of an array of them.
 
         Device code computes with the scalars; host code reads a record's arrays as the numpy or
-        cupy arrays they hold, so an array answers what both modules' arrays do.
+        cupy arrays they hold, so an array answers what both modules' arrays do. An element read
+        out of an array is its patos scalar `T`.
         """
 
         size: int
@@ -107,16 +114,18 @@ if TYPE_CHECKING:
         nbytes: int
 
         @overload
-        def __getitem__(self, index: int | np.integer | Numeric) -> T: ...
+        def __getitem__(self, index: Index | tuple[Index, ...]) -> T: ...
 
         @overload
         def __getitem__(self, index: slice | Shaped) -> Self: ...
 
-        def __getitem__(self, index: int | np.integer | Numeric | slice | Shaped) -> T | Self: ...
+        def __getitem__(self, index: Index | tuple[Index, ...] | slice | Shaped) -> T | Self: ...
 
         def __setitem__(
-            self, index: int | np.integer | slice | Shaped, value: Operand
+            self, index: Index | tuple[Index, ...] | slice | Shaped, value: Operand
         ) -> None: ...
+
+        def __len__(self) -> int: ...
 
         def __add__(self, value: Operand) -> Self: ...
         def __radd__(self, value: Operand) -> Self: ...
@@ -147,9 +156,9 @@ if TYPE_CHECKING:
         def __int__(self) -> int: ...
         def __index__(self) -> int: ...
 
-        def astype(self, dtype: DTypeLike) -> Numeric[np.number, *Shape]: ...
+        def astype(self, dtype: DTypeLike) -> number[*Shape]: ...
 
-        def view(self, dtype: DTypeLike) -> Numeric[np.number, *Shape]: ...
+        def view(self, dtype: DTypeLike) -> number[*Shape]: ...
 
         def copy(self) -> Self: ...
 
@@ -157,33 +166,35 @@ if TYPE_CHECKING:
 
         def get(self, *, stream: DeviceStream | None = None) -> np.ndarray: ...
 
-    # What arithmetic meets a numeric value with.
+    # What arithmetic meets a numeric value with, and what indexes an array.
     type Operand = int | np.integer | Shaped | Numeric
+    type Index = int | np.integer | Numeric
 
-    class u8[*Shape = *tuple[()]](Numeric[np.uint8, *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> np.uint8: ...
+    # A type called converts to its scalar, which an array's elements are as well.
+    class u8[*Shape = *tuple[()]](Numeric["u8", *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> u8: ...
 
-    class u16[*Shape = *tuple[()]](Numeric[np.uint16, *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> np.uint16: ...
+    class u16[*Shape = *tuple[()]](Numeric["u16", *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> u16: ...
 
-    class u32[*Shape = *tuple[()]](Numeric[np.uint32, *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> np.uint32: ...
+    class u32[*Shape = *tuple[()]](Numeric["u32", *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> u32: ...
 
-    class u64[*Shape = *tuple[()]](Numeric[np.uint64, *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> np.uint64: ...
+    class u64[*Shape = *tuple[()]](Numeric["u64", *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> u64: ...
 
-    class i16[*Shape = *tuple[()]](Numeric[np.int16, *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> np.int16: ...
+    class i16[*Shape = *tuple[()]](Numeric["i16", *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> i16: ...
 
-    class i32[*Shape = *tuple[()]](Numeric[np.int32, *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> np.int32: ...
+    class i32[*Shape = *tuple[()]](Numeric["i32", *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> i32: ...
 
-    class i64[*Shape = *tuple[()]](Numeric[np.int64, *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> np.int64: ...
+    class i64[*Shape = *tuple[()]](Numeric["i64", *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> i64: ...
 
-    class unsigned[*Shape](Numeric[np.unsignedinteger, *Shape]): ...
+    class unsigned[*Shape](Numeric["unsigned", *Shape]): ...
 
-    class number[*Shape](Numeric[np.number, *Shape]): ...
+    class number[*Shape](Numeric["number", *Shape]): ...
 
 else:
 
@@ -198,7 +209,7 @@ else:
 
         def __class_getitem__(cls, shape):
             dimensions = shape if isinstance(shape, tuple) else (shape,)
-            if any(dimension is not int for dimension in dimensions):
+            if not dimensions or any(dimension is not int for dimension in dimensions):
                 raise TypeError(f"{name}[{shape!r}]: an array names each dimension `int`")
             return ArrayOf(base, len(dimensions))
 

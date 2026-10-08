@@ -1,67 +1,82 @@
-"""`patos.cuda.typed` on a host without a GPU.
-
-numba-cuda decorates lazily, so the annotation checks run at decoration, the rewritten functions
-execute as plain Python through `py_func`, and the typing rules resolve in a CUDA typing context
-without compiling for a device.
-"""
-
+import annotationlib
 import ast
+import copy
 import importlib
-import importlib.util
 import itertools
 import linecache
 import operator
+import pickle
 import re
 import textwrap
 from collections.abc import Callable, Sequence
-from typing import NamedTuple
+from contextlib import nullcontext
+from types import FunctionType, SimpleNamespace
 
+import cupy as cp
+import numpy as np
 import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-
-# The `cuda` extra carries numba-cuda, so without it there is nothing here to test.
-if importlib.util.find_spec("numba") is None:
-    pytest.skip("patos.cuda needs the `cuda` extra (numba-cuda)", allow_module_level=True)
-
-import numpy as np
 from numba import types
 from numba.core.errors import TypingError
 from numba.core.target_extension import target_override
 from numba.core.typing import templates
 from numba.cuda.dispatcher import CUDADispatcher
 from numba.cuda.target import CUDATypingContext
-from numba.np.numpy_support import from_dtype
+from numba.np.numpy_support import as_dtype, from_dtype
 
+from patos.cuda.runtime import Workspace
 from patos.cuda.typed import (
     AnnotationError,
-    Array,
+    Constant,
+    Kernel,
+    Per,
     Struct,
+    cuda,
     device,
     i16,
     i32,
     i64,
     kernel,
+    number,
     ptx,
     u8,
     u16,
     u32,
     u64,
+    unsigned,
 )
-from patos.cuda.typed.arithmetic import _ARITHMETIC, _COMPARISONS, _SHIFTS, meet, met, operated
-from patos.cuda.typed.declarations import Kind, Literal, Signature
+from patos.cuda.typed.arguments import Argument, argument
+from patos.cuda.typed.arithmetic import meet, met, operated
+from patos.cuda.typed.declarations import Evaluated, IntLiteral, Kind, Signature
+from patos.cuda.typed.scalars import ArrayOf
+
+# Checks, rewrites and typing rules need only the `cuda` extra, as numba-cuda decorates lazily;
+# what uploads or launches needs a device.
+gpu = pytest.mark.skipif(not cp.cuda.is_available(), reason="uploads and launches need a GPU")
 
 type Scalar = type[np.integer]
-type Reading = Scalar | Literal
+type Reading = Scalar | IntLiteral
+# What `defined` fills a template field with: a scalar by its short name, or text as it is.
+type Field = Scalar | str
+type Decorator = Callable[[FunctionType], FunctionType | Kernel]
+# A refusal a record raises, given a record of the `tables` fixture to start from.
+type Refusal = Callable[[Tables], Struct | type | Argument | None]
 
 _NAMES: dict[Scalar, str] = {
-    i16: "i16", i32: "i32", i64: "i64", u8: "u8", u16: "u16", u32: "u32", u64: "u64",
+    np.int16: "i16", np.int32: "i32", np.int64: "i64", np.uint8: "u8", np.uint16: "u16",
+    np.uint32: "u32", np.uint64: "u64",
+}  # fmt: skip
+# An array annotation's element: a scalar, or an open type naming a family of them.
+_ELEMENTS: dict[type[np.number], str] = {
+    **_NAMES, np.number: "number", np.unsignedinteger: "unsigned"
 }  # fmt: skip
 _NUMBA: dict[type, types.Type] = {kind: from_dtype(np.dtype(kind)) for kind in _NAMES}
 _NUMBA[bool] = types.boolean
+_DTYPES = [np.bool_, np.int8, *_NAMES, np.float32, np.float64]
 scalars = st.sampled_from(list(_NAMES))
 # numpy types a u64 met with a signed integer as a float, which no conversion round-trips.
-not_u64 = st.sampled_from([kind for kind in _NAMES if kind is not u64])
+not_u64 = st.sampled_from([kind for kind in _NAMES if kind is not np.uint64])
 bounded = st.integers(-(2**40), 2**40)
 # The edges of every scalar type, where a literal fits or does not, inside what Numba can type.
 _EDGES = [
@@ -70,86 +85,230 @@ _EDGES = [
     for edge in (-(2**bit), 2**bit - 1, 2**bit)
     if -(2**63) <= edge < 2**64
 ]
-literals = st.one_of(st.integers(-(2**63), 2**64 - 1), st.sampled_from(_EDGES)).map(Literal)
+literals = st.one_of(st.integers(-(2**63), 2**64 - 1), st.sampled_from(_EDGES)).map(IntLiteral)
 operands = st.one_of(scalars, literals)
 # A literal past int64 types as uint64 whatever it meets, which the shift reading leaves out.
 int64_operands = st.one_of(scalars, literals.filter(lambda literal: literal.value < 2**63))
+# The operators the C rules type, each family as `arithmetic` promises it.
+_ARITHMETIC = (
+    operator.add, operator.sub, operator.mul, operator.floordiv, operator.mod,
+    operator.and_, operator.or_, operator.xor,
+    operator.iadd, operator.isub, operator.imul, operator.ifloordiv, operator.imod,
+    operator.iand, operator.ior, operator.ixor,
+)  # fmt: skip
+_SHIFTS = (operator.lshift, operator.rshift, operator.ilshift, operator.irshift)
+_COMPARISONS = (operator.lt, operator.le, operator.gt, operator.ge, operator.eq, operator.ne)
 _BINARY: dict[type[ast.operator], Callable] = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
     ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.BitAnd: operator.and_,
     ast.BitOr: operator.or_, ast.BitXor: operator.xor, ast.LShift: operator.lshift,
     ast.RShift: operator.rshift,
 }  # fmt: skip
-_OPERATORS = [op for op in (*_ARITHMETIC, *_COMPARISONS, *_SHIFTS) if op not in (min, max)]
 _SOURCES = itertools.count()
 
 
 class Tables(Struct):
-    """A record of one array and two scalars, the second one defaulted."""
+    """An open-addressed table: its slots, the mask a key hashes by, and a shift."""
 
-    slots: Array[u64]
+    slots: u64[int]
     mask: u32
-    shift: i32 = i32(3)
+    shift: i32
 
 
-class PlainTables(NamedTuple):
-    """The same fields as a plain named tuple, which the host builds unchecked."""
+class Lookup(Struct):
+    """A record of a record, keys of any unsigned element, the rows a probe fills, and a flag."""
 
-    slots: Array[u64]
-    mask: u32
-    shift: i32 = i32(3)
+    tables: Tables
+    keys: unsigned[int]
+    found: u64[int, int]
+    exact: bool = True
 
 
-def defined(template: str, **kinds: Scalar) -> Callable:
-    """The function `f` that `template` defines, not decorated yet.
+class Window(Struct):
+    """A record whose width is part of its device type, sizing a local array as a literal."""
 
-    The `{field}`s of the template are filled with the short names of `kinds`. It runs in a
-    namespace of the scalars, `Array`, `device`, `kernel`, `ptx` and the two records, and its text
-    is registered under a made-up file so that `inspect.getsource` finds it as it does a real
-    module's.
+    values: u64[int]
+    width: Constant[int]
+
+    @kernel
+    def sums(self, out: u64[int]) -> None:
+        """Each thread sums the `width` values from its own, staged through a local array."""
+        start = cuda.grid(1)
+        if start + self.width <= self.values.size:
+            window = cuda.local.array(self.width, np.uint64)
+            for offset in range(self.width):
+                window[offset] = self.values[start + offset]
+            for offset in range(self.width):
+                out[start] += window[offset]
+
+
+@kernel
+def total(values: unsigned[int], sums: u64[int]) -> None:
+    """Add every value into `sums[0]`."""
+    item = cuda.grid(1)
+    if item < values.size:
+        cuda.atomic.add(sums, 0, u64(values[item]))
+
+
+def noop(count: i32) -> None:
+    """A kernel body the grid tests never launch."""
+
+
+def member(self, out: u64[int]) -> None:
+    """A kernel body taking `self`, which only a record class gives it."""
+
+
+_NAMESPACE: dict[str, Callable | type] = {
+    "u8": u8, "u16": u16, "u32": u32, "u64": u64, "i16": i16, "i32": i32, "i64": i64,
+    "number": number, "unsigned": unsigned, "Struct": Struct, "Tables": Tables, "Per": Per,
+    "cuda": cuda, "device": device, "kernel": kernel, "ptx": ptx,
+}  # fmt: skip
+
+
+def executed(template: str, **fields: Field) -> SimpleNamespace:
+    """What `template` defines, run as a module of its own.
+
+    The `{field}`s of the template are filled with `fields`, a scalar by its short name. It runs in
+    a namespace of the patos types, the decorators and `Tables`, and its text is registered under a
+    made-up file so that `inspect.getsource` finds it as it does a real module's. Device code that
+    indexes a table by a tuple, takes the `len` of a record or calls a device function with the
+    wrong array is spelled this way, since no type checker follows it.
     """
-    shorts = {field: _NAMES[kind] for field, kind in kinds.items()}
-    text = textwrap.dedent(template).lstrip("\n").format(**shorts)
-    filename = f"<patos-cuda-test-{next(_SOURCES)}>"
-    linecache.cache[filename] = (len(text), None, text.splitlines(keepends=True), filename)
-    namespace: dict[str, Callable | type] = {
-        **{short: kind for kind, short in _NAMES.items()},
-        "Array": Array,
-        "device": device,
-        "kernel": kernel,
-        "ptx": ptx,
-        "Tables": Tables,
-        "PlainTables": PlainTables,
+    filled = {
+        name: _NAMES[kind] if not isinstance(kind, str) else kind for name, kind in fields.items()
     }
+    text = textwrap.dedent(template).lstrip("\n").format(**filled)
+    source = next(_SOURCES)
+    filename = f"<patos-cuda-test-{source}>"
+    linecache.cache[filename] = (len(text), None, text.splitlines(keepends=True), filename)
+    namespace = _NAMESPACE | {"__name__": f"patos_cuda_test_{source}"}
     exec(compile(text, filename, "exec"), namespace)
-    return namespace["f"]
+    return SimpleNamespace(**namespace)
 
 
-def dispatched(function: Callable, *, decorator: Callable = device) -> CUDADispatcher:
-    """`function` as `decorator` compiles it."""
-    dispatcher = decorator(function)
+def defined(template: str, **fields: Field) -> FunctionType:
+    """The function `f` that `template` defines, not decorated yet."""
+    function = executed(template, **fields).f
+    assert isinstance(function, FunctionType)
+    return function
+
+
+_DEVICE = executed(
+    '''
+    class Hashed(Struct):
+        """A table read on the device through operators, a property and a method."""
+
+        slots: u64[int]
+        mask: u32
+        shift: i32
+
+        @device
+        def __getitem__(self, index: i32) -> u64:
+            return self.slots[index & self.mask]
+
+        @device
+        def __len__(self) -> i64:
+            return len(self.slots)
+
+        @device
+        def __contains__(self, key: u64) -> bool:
+            return self.slots[key & self.mask] == key
+
+        @property
+        @device
+        def capacity(self) -> u32:
+            return self.mask + 1
+
+        @device
+        def shifted(self, key: u64) -> u64:
+            return key >> self.shift
+
+
+    class Probe(Struct):
+        """A hashed table, keys of any unsigned element, the rows a probe fills, and a flag."""
+
+        hashed: Hashed
+        keys: unsigned[int]
+        found: u64[int, int]
+        exact: bool = True
+
+        @kernel(per=Per.WARP, threads=64)
+        def probe(self, base: u64) -> None:
+            """Each warp's first lane fills its key's row through every member of the table."""
+            item = cuda.grid(1) // 32
+            if cuda.laneid == 0 and item < len(self.keys):
+                key = u64(self.keys[item])
+                self.found[item, 0] = self.hashed[item]
+                self.found[item, 1] = len(self.hashed)
+                self.found[item, 2] = key in self.hashed
+                self.found[item, 3] = self.hashed.capacity
+                self.found[item, 4] = self.hashed.shifted(key) + base
+                self.found[item, 5] = self.exact
+
+
+    @kernel
+    def scatter(
+        row: i64[int], table: i16[int, int], small: u8, signed: i16, wide: u32, flag: bool
+    ) -> None:
+        """Write each scalar where the host reads it back, `signed` at the table's last corner."""
+        row[0] = small
+        row[1] = signed
+        row[2] = wide
+        row[3] = flag
+        table[table.shape[0] - 1, table.shape[1] - 1] = signed
+
+
+    @device
+    def first(values: u8[int]) -> u8:
+        return values[0]
+
+
+    @kernel
+    def delegate(values: i32[int], out: u8[int]) -> None:
+        """Hand `values` to a device function declaring another element."""
+        out[0] = first(values)
+    '''
+)
+
+
+def annotation(text: str) -> Evaluated:
+    """What `text` evaluates to as an annotation where the patos types are in scope."""
+    return annotationlib.ForwardRef(text).evaluate(globals=_NAMESPACE)
+
+
+def dispatched(function: FunctionType) -> CUDADispatcher:
+    """`function` as `device` compiles it."""
+    dispatcher = device(function)
     assert isinstance(dispatcher, CUDADispatcher)
     return dispatcher
 
 
-def recorded(function: Callable) -> Signature:
+def recorded(function: FunctionType) -> Signature:
     """What the decorator recorded of the annotations of the rewritten `function`."""
     return function.__dict__["device_signature"]
 
 
-def host(template: str, **kinds: Scalar) -> Callable:
+def host(template: str, **fields: Field) -> FunctionType:
     """The rewritten function `template` defines as plain Python, annotations converting."""
-    return dispatched(defined(template, **kinds)).py_func
+    return dispatched(defined(template, **fields)).py_func
 
 
-def rejection(function: Callable, *, decorator: Callable = device) -> str:
+def rejection(function: FunctionType, *, decorator: Decorator = device) -> str:
     """The `AnnotationError` message `decorator` raises for `function`."""
     with pytest.raises(AnnotationError) as caught:
         decorator(function)
     return str(caught.value)
 
 
-def verdict(function: Callable) -> str:
+def outcome[R: Struct](build: Callable[[], R]) -> R | set[str]:
+    """The record `build` builds, or the fields its refusal names."""
+    try:
+        return build()
+    except TypeError as error:
+        return {problem.split()[0] for problem in str(error).split(": ", 1)[1].split("; ")}
+
+
+def verdict(function: FunctionType) -> str:
     """The `AnnotationError` message `device` raises for `function`, empty when it accepts it."""
     try:
         device(function)
@@ -171,15 +330,16 @@ def held(kinds: Sequence[Scalar], values: Sequence[int]) -> list[int]:
     return [wrapped(kind, value) for kind, value in zip(kinds, values, strict=True)]
 
 
-def numba_type(kind: Kind) -> types.Type:
-    """The Numba type a reading of `kind` stands for."""
-    assert kind is not None
-    return types.IntegerLiteral(kind.value) if isinstance(kind, Literal) else _NUMBA[kind]
+def typed_as(reading: Kind) -> types.Type:
+    """The Numba type a reading stands for."""
+    assert reading is not None
+    return (
+        types.IntegerLiteral(reading.value) if isinstance(reading, IntLiteral) else _NUMBA[reading]
+    )
 
 
 def is_negative_literal(reading: Reading) -> bool:
-    """Whether `reading` is a literal below zero."""
-    return isinstance(reading, Literal) and reading.value < 0
+    return isinstance(reading, IntLiteral) and reading.value < 0
 
 
 def decided(*, left: Reading, right: Reading) -> types.Type | None:
@@ -187,20 +347,12 @@ def decided(*, left: Reading, right: Reading) -> types.Type | None:
 
     That order is the operands' literals first, then their plain types.
     """
-    literal = met(numba_type(left), numba_type(right))
+    literal = met(typed_as(left), typed_as(right))
     return (
         literal
         if literal is not None
-        else met(types.unliteral(numba_type(left)), types.unliteral(numba_type(right)))
+        else met(types.unliteral(typed_as(left)), types.unliteral(typed_as(right)))
     )
-
-
-@pytest.fixture(scope="module")
-def context() -> CUDATypingContext:
-    """A CUDA typing context carrying the rules the module registers."""
-    typing = CUDATypingContext()
-    typing.refresh()
-    return typing
 
 
 def resolved(
@@ -213,98 +365,150 @@ def resolved(
     return signature
 
 
-@given(kind=scalars)
-def test_an_incomplete_signature_names_the_parameter_and_the_return(*, kind: Scalar) -> None:
-    """A parameter without an annotation and a missing return annotation are both named."""
-    parameter = rejection(defined("def f(x) -> {kind}:\n    return x\n", kind=kind))
-    result = rejection(defined("def f(x: {kind}):\n    return x\n", kind=kind))
+def probed(keys: np.ndarray, *, exact: bool, base: int) -> np.ndarray:
+    """The uint64 rows of shape `[n, 6]` that `Probe.probe` writes for `keys`.
 
-    assert "parameter `x` has no annotation" in parameter
-    assert "the return has no annotation" in result
-
-
-def test_every_problem_is_reported_on_a_line_of_its_own() -> None:
-    """The message lists each issue as `file:line: function: message`, not only the first."""
-    lines = rejection(defined("def f(x, y):\n    pass\n")).splitlines()
-
-    assert len(lines) == 3
-    assert all(re.match(r"<patos-cuda-test-\d+>:\d+: f: ", line) for line in lines)
-
-
-@given(kind=scalars)
-def test_a_kernel_returns_none(*, kind: Scalar) -> None:
-    """A kernel annotated with anything but None is rejected, one annotated None is not."""
-    returns_value = defined("def f(x: {kind}) -> {kind}:\n    return x\n", kind=kind)
-    returns_none = defined("def f(x: {kind}) -> None:\n    pass\n", kind=kind)
-
-    function = dispatched(returns_none, decorator=kernel).py_func
-
-    assert "a kernel returns None" in rejection(returns_value, decorator=kernel)
-    assert recorded(function).returns is type(None)
-
-
-@given(kind=scalars)
-def test_a_return_agrees_with_the_return_annotation(*, kind: Scalar) -> None:
-    """A return carries a value exactly where the annotation names one, element by element."""
-    value = rejection(defined("def f(x: {kind}) -> None:\n    return x\n", kind=kind))
-    nothing = rejection(defined("def f(x: {kind}) -> {kind}:\n    return\n", kind=kind))
-    whole = rejection(
-        defined("def f(x: {kind}) -> tuple[{kind}, {kind}]:\n    return x\n", kind=kind)
+    keys: unsigned integers of shape `[n]`, looked up in slots `9 * i` under mask 7 and shift 3.
+    """
+    slots, index, wide = (
+        np.arange(8, dtype=np.uint64) * 9,
+        np.arange(len(keys)),
+        keys.astype(np.uint64),
     )
-
-    assert "returns a value where None is declared" in value
-    assert f"returns nothing where {_NAMES[kind]} is declared" in nothing
-    assert "return the 2 elements so each converts" in whole
-
-
-@pytest.mark.parametrize(
-    ("template", "message"),
-    [
-        ("def f(x: str) -> None:\n    pass\n", "`str` names no device type"),
-        ("def f(x: i32) -> Array[i32]:\n    return x\n", "a device function returns no array"),
-        ("def f(x: i32) -> None:\n    y: Array[i32] = x\n", "declares an array"),
-        ("def f(x: Array[i32]) -> None:\n    x[0]: i32 = 1\n", "is no name to declare"),
-    ],
-)
-def test_annotations_must_name_device_types(*, template: str, message: str) -> None:
-    """An annotation outside the device types, or where it cannot be carried, is rejected."""
-    assert message in rejection(defined(template))
+    eight, flags = np.full(len(keys), 8), np.full(len(keys), exact)
+    columns = [slots[index & 7], eight, slots[wide & 7] == wide, eight, (wide >> 3) + base, flags]
+    return np.stack(columns, axis=1).astype(np.uint64)
 
 
-@given(kind=scalars, other=scalars)
-def test_a_name_is_declared_once(*, kind: Scalar, other: Scalar) -> None:
-    """A second declaration of a local or of a parameter is rejected, even when it agrees."""
-    local = defined(
+@pytest.fixture(scope="module")
+def context() -> CUDATypingContext:
+    """A CUDA typing context carrying the rules the module registers."""
+    typing = CUDATypingContext()
+    typing.refresh()
+    return typing
+
+
+@pytest.fixture
+def tables() -> Tables:
+    """Slots `9 * i` under mask 7, so slot `i` holds the one key in it that hashes there."""
+    return Tables(np.arange(8, dtype=np.uint64) * 9, 7, 3)
+
+
+_UNSTANDING: dict[str, tuple[Decorator, str, str]] = {
+    "unannotated parameter": (
+        device,
+        "def f(x) -> {kind}:\n    return x\n",
+        "parameter `x` has no annotation",
+    ),
+    "every issue named": (device, "def f(x, y):\n    pass\n", "parameter `y` has no annotation"),
+    "unannotated return": (
+        device,
+        "def f(x: {kind}):\n    return x\n",
+        "the return has no annotation",
+    ),
+    "kernel returning": (
+        kernel,
+        "def f(x: {kind}) -> {kind}:\n    return x\n",
+        "a kernel returns None",
+    ),
+    "value for None": (
+        device,
+        "def f(x: {kind}) -> None:\n    return x\n",
+        "returns a value where None is declared",
+    ),
+    "nothing for a value": (
+        device,
+        "def f(x: {kind}) -> {kind}:\n    return\n",
+        "returns nothing where {kind} is declared",
+    ),
+    "tuple whole": (
+        device,
+        "def f(x: {kind}) -> tuple[{kind}, {kind}]:\n    return x\n",
+        "return the 2 elements so each converts",
+    ),
+    "no device type": (device, "def f(x: str) -> None:\n    pass\n", "`str` names no device type"),
+    "array returned": (
+        device,
+        "def f(x: {kind}) -> {kind}[int]:\n    return x\n",
+        "a device function returns no array",
+    ),
+    "record of an array returned": (
+        device,
+        "def f(x: {kind}) -> Tables:\n    return x\n",
+        "a device function returns no array",
+    ),
+    "array local": (
+        device,
+        "def f(x: {kind}) -> None:\n    y: {kind}[int] = x\n",
+        "`y` declares an array",
+    ),
+    "subscript declared": (
+        device,
+        "def f(x: {kind}[int]) -> None:\n    x[0]: {kind} = 1\n",
+        "`x[0]` is no name to declare",
+    ),
+    "local twice": (
+        device,
         "def f(x: {kind}) -> None:\n    y: {kind} = 0\n    y: {other} = 1\n",
-        kind=kind,
-        other=other,
-    )
-    parameter = defined("def f(x: {kind}) -> None:\n    x: {other} = 1\n", kind=kind, other=other)
+        "`y` is declared {kind} already",
+    ),
+    "parameter again": (
+        device,
+        "def f(x: {kind}) -> None:\n    x: {other} = 1\n",
+        "parameter `x` is declared again",
+    ),
+    "loop variable": (
+        device,
+        "def f(n: i32) -> None:\n    i: {kind} = 0\n    for i in range(n):\n        pass\n",
+        "loop variable `i` is declared",
+    ),
+}
 
-    assert f"`y` is declared {_NAMES[kind]} already" in rejection(local)
-    assert "parameter `x` is declared again" in rejection(parameter)
+
+@pytest.mark.parametrize(("decorator", "template", "issue"), _UNSTANDING.values(), ids=_UNSTANDING)
+@given(kind=scalars, other=scalars)
+@settings(max_examples=20)
+def test_an_annotation_that_cannot_stand_is_refused_line_by_line(
+    *, decorator: Decorator, template: str, issue: str, kind: Scalar, other: Scalar
+) -> None:
+    """Every issue is named, each on a `file:line: function:` line of its own."""
+    message = rejection(defined(template, kind=kind, other=other), decorator=decorator)
+
+    assert issue.format(kind=_NAMES[kind]) in message
+    assert all(re.match(r"<patos-cuda-test-\d+>:\d+: f: ", line) for line in message.splitlines())
 
 
-@given(kind=scalars)
-def test_a_loop_variable_is_not_declared(*, kind: Scalar) -> None:
-    """The iterable types a loop variable, so declaring it as well is rejected."""
-    loop = defined(
-        """
-        def f(n: i32) -> None:
-            i: {kind} = 0
-            for i in range(n):
-                pass
-        """,
-        kind=kind,
-    )
+@given(name=st.sampled_from(list(_ELEMENTS.values())), dims=st.integers(1, 3), data=st.data())
+def test_a_numeric_type_is_a_scalar_and_by_int_per_dimension_an_array(
+    *, name: str, dims: int, data: st.DataObject
+) -> None:
+    """Called, a numeric type is its numpy scalar; subscripted, an array, of `int`s alone."""
+    element = next(kind for kind, short in _ELEMENTS.items() if short == name)
+    shape = ", ".join(["int"] * dims)
+    wrong = data.draw(st.sampled_from(["3", ":", "float", f"{shape}, 2", f"str, {shape}"]))
 
-    assert "loop variable `i` is declared" in rejection(loop)
+    assert annotation(f"{name}[{shape}]") == ArrayOf(element, dims)
+    with pytest.raises(TypeError, match=f"{name}\\[.*\\]: an array names each dimension `int`"):
+        annotation(f"{name}[{wrong}]")
+    assert [type(kind(7)) for kind in (u8, u16, u32, u64, i16, i32, i64)] == [
+        np.uint8, np.uint16, np.uint32, np.uint64, np.int16, np.int32, np.int64
+    ]  # fmt: skip
 
 
 _REDUNDANT = {
     "value already of the type": (
         "def f(x: {kind}) -> None:\n    y = {kind}(x)\n",
         "`x` is already {kind}",
+    ),
+    "record field already of the type": (
+        """
+        class Header(Struct):
+            mask: {kind}
+
+        def f(header: Header) -> None:
+            y = {kind}(header.mask)
+        """,
+        "`header.mask` is already {kind}",
     ),
     "declaration converts": (
         "def f(x: {other}) -> None:\n    y: {kind} = {kind}(x)\n",
@@ -323,28 +527,10 @@ _REDUNDANT = {
         "the return annotation converts to {kind}",
     ),
     "store into an array converts": (
-        "def f(out: Array[{kind}], x: {other}) -> None:\n    out[0] = {kind}(x)\n",
+        "def f(out: {kind}[int], x: {other}) -> None:\n    out[0] = {kind}(x)\n",
         "the store into `out` converts to {kind}",
     ),
-}
-
-
-@pytest.mark.parametrize(("template", "reason"), _REDUNDANT.values(), ids=_REDUNDANT)
-@given(kind=scalars, other=scalars)
-def test_a_cast_an_annotation_repeats_is_redundant(
-    *, template: str, reason: str, kind: Scalar, other: Scalar
-) -> None:
-    """A cast to the type an annotation already converts to is rejected, naming that annotation."""
-    message = rejection(defined(template, kind=kind, other=other))
-
-    assert "is a redundant cast" in message
-    assert reason.format(kind=_NAMES[kind]) in message
-
-
-@given(kind=scalars, other=scalars)
-def test_a_callees_parameter_converts_its_argument(*, kind: Scalar, other: Scalar) -> None:
-    """A cast of an argument to the type the callee's annotated parameter has is redundant."""
-    caller = defined(
+    "callee's parameter converts": (
         """
         @device
         def callee(x: {kind}) -> {kind}:
@@ -353,11 +539,22 @@ def test_a_callees_parameter_converts_its_argument(*, kind: Scalar, other: Scala
         def f(y: {other}) -> None:
             z = callee({kind}(y))
         """,
-        kind=kind,
-        other=other,
-    )
+        "`callee`'s parameter converts to {kind}",
+    ),
+}
 
-    assert f"`callee`'s parameter converts to {_NAMES[kind]}" in rejection(caller)
+
+@pytest.mark.parametrize(("template", "reason"), _REDUNDANT.values(), ids=_REDUNDANT)
+@given(kind=scalars, other=scalars)
+@settings(max_examples=20)
+def test_a_cast_something_else_already_does_is_redundant(
+    *, template: str, reason: str, kind: Scalar, other: Scalar
+) -> None:
+    """A cast to the type an annotation already converts to is rejected, naming that annotation."""
+    message = rejection(defined(template, kind=kind, other=other))
+
+    assert "is a redundant cast" in message
+    assert reason.format(kind=_NAMES[kind]) in message
 
 
 _STATEMENTS = {
@@ -369,35 +566,35 @@ _STATEMENTS = {
 }
 
 
-def casting(statement: str, *, kind: Scalar, other: Scalar) -> Callable:
-    """`a` of type `kind` meeting `b` of type `other` in `statement`, which casts `b` to `kind`."""
+@pytest.mark.parametrize("statement", _STATEMENTS.values(), ids=_STATEMENTS)
+@pytest.mark.parametrize(
+    ("kind", "other", "redundant"),
+    [
+        *[(kind, other, True) for kind, other in [
+            (np.uint64, np.int32), (np.uint64, np.uint8), (np.uint64, np.uint64),
+            (np.int64, np.int16), (np.int64, np.uint32), (np.uint32, np.int16),
+            (np.uint32, np.uint8),
+        ]],
+        *[(kind, other, False) for kind, other in [
+            (np.int32, np.int16), (np.int32, np.uint32), (np.uint32, np.uint64),
+            (np.uint32, np.int64), (np.int64, np.uint64), (np.uint8, np.int16),
+        ]],
+    ],
+)  # fmt: skip
+def test_a_cast_is_redundant_exactly_where_the_operator_already_meets_in_its_type(
+    *, statement: str, kind: Scalar, other: Scalar, redundant: bool
+) -> None:
+    """A cast of `b` to the type of `a` is redundant exactly where the operator meets them there.
+
+    Everywhere else the cast changes the result, so it stays.
+    """
     template = f"def f(a: {{kind}}, b: {{other}}) -> None:\n    {statement}\n"
-    return defined(template, kind=kind, other=other)
+    message = verdict(defined(template, kind=kind, other=other))
 
-
-@pytest.mark.parametrize("statement", _STATEMENTS.values(), ids=_STATEMENTS)
-@pytest.mark.parametrize(
-    ("kind", "other"),
-    [(u64, i32), (u64, u8), (u64, u64), (i64, i16), (i64, u32), (u32, i16), (u32, u8)],
-)
-def test_a_cast_the_operator_repeats_is_redundant(
-    *, statement: str, kind: Scalar, other: Scalar
-) -> None:
-    """Where the operator already meets `b` in the type of `a`, casting `b` to it is rejected."""
-    message = rejection(casting(statement, kind=kind, other=other))
-
-    assert f"`a` is {_NAMES[kind]}, so the operator converts it" in message
-
-
-@pytest.mark.parametrize("statement", _STATEMENTS.values(), ids=_STATEMENTS)
-@pytest.mark.parametrize(
-    ("kind", "other"), [(i32, i16), (i32, u32), (u32, u64), (u32, i64), (i64, u64), (u8, i16)]
-)
-def test_a_cast_the_operator_would_not_make_is_kept(
-    *, statement: str, kind: Scalar, other: Scalar
-) -> None:
-    """Where the operator meets the operands elsewhere, the cast changes the result and stays."""
-    device(casting(statement, kind=kind, other=other))
+    assert (f"`a` is {_NAMES[kind]}, so the operator converts it" in message, bool(message)) == (
+        redundant,
+        redundant,
+    )
 
 
 @given(kind=scalars, other=scalars)
@@ -406,47 +603,35 @@ def test_a_cast_is_rejected_only_where_numba_types_the_sum_as_the_cast(
     context: CUDATypingContext, *, kind: Scalar, other: Scalar
 ) -> None:
     """Soundness: a cast the decorator calls redundant never changes what Numba types."""
-    message = verdict(casting("c = a + {kind}(b)", kind=kind, other=other))
-    if message:
-        assume("so the operator converts it" in message)
-        signature = resolved(context, operator.add, numba_type(kind), numba_type(other))
-        assert signature.return_type == numba_type(kind)
+    template = "def f(a: {kind}, b: {other}) -> None:\n    c = a + {kind}(b)\n"
+    message = verdict(defined(template, kind=kind, other=other))
+    assume("so the operator converts it" in message)
+
+    signature = resolved(context, operator.add, typed_as(kind), typed_as(other))
+
+    assert signature.return_type == typed_as(kind)
 
 
-@given(kind=scalars, other=scalars)
-def test_a_cast_to_another_type_is_not_redundant(*, kind: Scalar, other: Scalar) -> None:
-    """A conversion nothing else performs decorates fine and records the signature."""
-    assume(kind is not other)
-    template = "def f(x: {other}) -> None:\n    y = {kind}(x)\n"
-    function = dispatched(defined(template, kind=kind, other=other)).py_func
+def test_a_rebuilt_function_keeps_its_name_docstring_globals_and_signature() -> None:
+    """A rebuilt device function keeps the original's name, docstring, globals and signature.
 
-    assert recorded(function).parameters == (other,)
+    Widening before a product repeats nothing, and reading the module's own globals lets a device
+    function call one its module defines further down.
+    """
+    original = defined(
+        '''
+        def f(a: u32, b: u32, out: u64[int]) -> u64:
+            """Widen before the product."""
+            total: u64 = u64(a) * b
+            out[0] = total
+            return total
+        '''
+    )
+    rebuilt = dispatched(original).py_func
 
-
-def test_a_clean_function_decorates_and_keeps_its_docstring() -> None:
-    """Widening before a product repeats nothing, and the rewrite keeps docstring and name."""
-    function = dispatched(
-        defined(
-            '''
-            def f(a: u32, b: u32, out: Array[u64]) -> u64:
-                """Widen before the product."""
-                total: u64 = u64(a) * b
-                out[0] = total
-                return total
-            '''
-        )
-    ).py_func
-
-    assert function.__doc__ == "Widen before the product."
-    assert function.__qualname__ == "f"
-    assert recorded(function).returns is u64
-
-
-def test_a_rebuilt_function_reads_its_module_globals_as_they_grow() -> None:
-    """A device function calling one the module defines further down finds it at compile time."""
-    function = defined("def f(x: i32) -> i32:\n    return x\n")
-
-    assert dispatched(function).py_func.__globals__ is function.__globals__
+    assert (rebuilt.__doc__, rebuilt.__qualname__) == ("Widen before the product.", "f")
+    assert rebuilt.__globals__ is original.__globals__
+    assert recorded(rebuilt) == Signature((np.uint32, np.uint32, ArrayOf(np.uint64, 1)), np.uint64)
 
 
 def test_a_type_parameter_is_left_alone_and_a_type_alias_declares_its_type() -> None:
@@ -455,158 +640,139 @@ def test_a_type_parameter_is_left_alone_and_a_type_alias_declares_its_type() -> 
     aliased = host("type Index = i32\n\ndef f(x: Index) -> Index:\n    return x\n")
 
     assert generic("unchanged") == "unchanged"
-    assert type(aliased(np.int64(7))) is i32
+    assert type(aliased(np.int64(7))) is np.int32
 
 
-@given(kinds=st.tuples(scalars, scalars, scalars), given=st.tuples(scalars, scalars, scalars))
-def test_a_device_function_compiles_at_its_declared_parameter_types(
-    *, kinds: Sequence[Scalar], given: Sequence[Scalar]
+_DECLARING = """
+type Pair = tuple[{second}, {third}]
+
+def f[T](x: {first}, pair: Pair, other: T, values: {element}[{shape}]) -> {first}:
+    return x
+"""
+
+
+@given(
+    kinds=st.tuples(scalars, scalars, scalars),
+    passed=st.tuples(scalars, scalars, scalars),
+    element=st.sampled_from(list(_ELEMENTS)),
+    dims=st.integers(1, 2),
+    array=st.builds(
+        types.Array, st.sampled_from(_DTYPES).map(lambda kind: from_dtype(np.dtype(kind))),
+        st.integers(1, 2), st.sampled_from("CA"),
+    ),
+)  # fmt: skip
+def test_a_device_function_compiles_at_the_types_its_parameters_declare(
+    *,
+    kinds: Sequence[Scalar],
+    passed: Sequence[Scalar],
+    element: type[np.number],
+    dims: int,
+    array: types.Array,
 ) -> None:
     """Numba compiles a device function at the parameter types it declares.
 
     Scalars and tuples, through a type alias too, take their declared types whatever the caller
-    passes, and a type parameter keeps the type it is passed.
+    passes, and a type parameter keeps the type it is passed. An array keeps the layout it is
+    passed when its element and dimensions are ones the parameter declares, and is refused with a
+    typing error naming the parameter otherwise.
     """
-    template = """
-    type Pair = tuple[{second}, {third}]
-
-    def f[T](x: {first}, pair: Pair, other: T) -> {first}:
-        return x
-    """
-    function = dispatched(defined(template, first=kinds[0], second=kinds[1], third=kinds[2]))
-    passed = (_NUMBA[given[0]], types.UniTuple(_NUMBA[given[1]], 2), _NUMBA[given[2]])
+    first, second, third = kinds
+    shape = ", ".join(["int"] * dims)
+    function = dispatched(
+        defined(
+            _DECLARING,
+            first=first,
+            second=second,
+            third=third,
+            element=_ELEMENTS[element],
+            shape=shape,
+        )
+    )
+    admitted = array.ndim == dims and np.issubdtype(as_dtype(array.dtype), element)
     compiled: list[tuple[types.Type, ...]] = []
-    with pytest.MonkeyPatch.context() as patch:
+    with (
+        pytest.MonkeyPatch.context() as patch,
+        nullcontext()
+        if admitted
+        else pytest.raises(TypingError, match=re.escape(f"f's `values` receives {array} where")),
+    ):
         patch.setattr(
             CUDADispatcher, "compile_device", lambda _, args, _returns=None: compiled.append(args)
         )
-        function.compile_device(passed)
+        function.compile_device(
+            (_NUMBA[passed[0]], types.UniTuple(_NUMBA[passed[1]], 2), _NUMBA[passed[2]], array)
+        )
 
-    pair = types.BaseTuple.from_types([_NUMBA[kinds[1]], _NUMBA[kinds[2]]])
-    assert compiled == [(_NUMBA[kinds[0]], pair, _NUMBA[given[2]])]
+    pair = types.BaseTuple.from_types([_NUMBA[second], _NUMBA[third]])
+    assert compiled == ([(_NUMBA[first], pair, _NUMBA[passed[2]], array)] if admitted else [])
 
 
-@given(kind=not_u64, a=bounded, b=bounded)
-def test_a_declared_local_keeps_its_type_across_assignments(
-    *, kind: Scalar, a: int, b: int
+@given(kind=not_u64, flag=st.booleans(), a=bounded, b=bounded)
+def test_a_declared_local_converts_every_assignment_to_its_declaration(
+    *, kind: Scalar, flag: bool, a: int, b: int
 ) -> None:
-    """Plain and augmented assignment convert back to the declaration, wrapping at each step."""
+    """Every assignment to a declared local converts to its declaration, wrapping at each step.
+
+    Plain, augmented, conditional and unpacking assignments all convert, while an undeclared target
+    of the same unpacking converts nothing.
+    """
     template = """
-    def f(a: i64, b: i64) -> i64:
+    def f(flag: bool, a: i64, b: i64) -> tuple[i64, i64, i64]:
         cursor: {kind}
         cursor = a
         cursor = cursor + b
         cursor += b
-        return cursor
+        chosen: {kind} = a if flag else b
+        other = 0
+        cursor, other = cursor + a, b
+        return cursor, chosen, other
     """
-    expected = wrapped(kind, a)
-    expected = wrapped(kind, expected + b)
-    expected = wrapped(kind, expected + b)
+    cursor = wrapped(kind, wrapped(kind, wrapped(kind, a) + b) + b)
+    expected = (wrapped(kind, cursor + a), wrapped(kind, a if flag else b), b)
 
-    assert host(template, kind=kind)(np.int64(a), np.int64(b)) == wrapped(i64, expected)
-
-
-@given(kind=scalars, a=bounded, b=bounded)
-def test_unpacking_converts_only_the_declared_targets(*, kind: Scalar, a: int, b: int) -> None:
-    """In `low, high = a, b` only the declared `low` converts."""
-    template = """
-    def f(a: i64, b: i64) -> tuple[i64, i64]:
-        low: {kind} = 0
-        high = 0
-        low, high = a, b
-        return low, high
-    """
-    low, high = host(template, kind=kind)(np.int64(a), np.int64(b))
-
-    assert (low, high) == (wrapped(i64, wrapped(kind, a)), b)
+    assert host(template, kind=kind)(flag, np.int64(a), np.int64(b)) == expected
 
 
-@given(kinds=st.tuples(scalars, scalars, scalars), a=bounded, b=bounded)
-def test_a_return_converts_each_element_of_nested_tuples(
-    *, kinds: tuple[Scalar, Scalar, Scalar], a: int, b: int
+@given(kinds=st.tuples(scalars, scalars, scalars), flag=st.booleans(), a=bounded, b=bounded)
+def test_a_return_converts_element_by_element_and_branch_by_branch(
+    *, kinds: tuple[Scalar, Scalar, Scalar], flag: bool, a: int, b: int
 ) -> None:
-    """Tuple and nested tuple returns convert element by element to the annotated types."""
+    """A return converts each element of a nested tuple to its annotated type.
+
+    A conditional element converts in whichever branch runs.
+    """
     template = """
-    def f(a: i64, b: i64) -> tuple[{first}, tuple[{second}, {third}]]:
-        return a, (b, a)
+    def f(flag: bool, a: i64, b: i64) -> tuple[{first}, tuple[{second}, {third}]]:
+        return (a if flag else b), (b, a)
     """
     function = host(template, first=kinds[0], second=kinds[1], third=kinds[2])
-    head, (middle, tail) = function(np.int64(a), np.int64(b))
+    head, (middle, tail) = function(flag, np.int64(a), np.int64(b))
 
     assert (type(head), type(middle), type(tail)) == kinds
-    assert [head, middle, tail] == held(kinds, [a, b, a])
-
-
-@given(kind=scalars, flag=st.booleans(), a=bounded, b=bounded)
-def test_a_conditional_converts_branch_by_branch(
-    *, kind: Scalar, flag: bool, a: int, b: int
-) -> None:
-    """Whichever branch runs, the return and the declared local hold `kind`."""
-    returned = host(
-        "def f(flag: bool, a: i64, b: i64) -> {kind}:\n    return a if flag else b\n", kind=kind
-    )
-    declared = host(
-        """
-        def f(flag: bool, a: i64, b: i64) -> i64:
-            chosen: {kind} = a if flag else b
-            return chosen
-        """,
-        kind=kind,
-    )
-    arguments = (flag, np.int64(a), np.int64(b))
-    expected = wrapped(kind, a if flag else b)
-
-    assert type(returned(*arguments)) is kind
-    assert returned(*arguments) == expected
-    assert declared(*arguments) == wrapped(i64, expected)
-
-
-@given(kind=scalars, other=scalars)
-@settings(deadline=None)
-def test_an_array_parameter_accepts_only_its_element_type(
-    context: CUDATypingContext, *, kind: Scalar, other: Scalar
-) -> None:
-    """The check an `Array[T]` parameter leaves in the body fails typing for any other dtype."""
-    function = dispatched(
-        defined("def f(a: Array[{kind}]) -> None:\n    pass\n", kind=kind)
-    ).py_func
-    (name,) = [name for name in function.__code__.co_names if name.startswith("check_")]
-    check = getattr(function.__globals__["_patos_expectations"], name)
-    arguments = (types.Array(numba_type(other), 1, "C"), types.NumberClass(numba_type(kind)))
-    context.refresh()
-
-    if kind is other:
-        assert resolved(context, check, *arguments).return_type == types.none
-    else:
-        message = (
-            rf"f's `a` receives array\({numba_type(other)}, 1d, C\) "
-            f"where an Array of {numba_type(kind)} is declared"
-        )
-        with pytest.raises(TypingError, match=message):
-            resolved(context, check, *arguments)
+    assert [head, middle, tail] == held(kinds, [a if flag else b, b, a])
 
 
 @given(left=operands, right=operands)
 def test_the_static_meet_agrees_with_the_runtime_rule(*, left: Reading, right: Reading) -> None:
     """Wherever the runtime rule `met` decides, `meet` reads the same type, and only there."""
-    runtime = met(numba_type(left), numba_type(right))
+    runtime = met(typed_as(left), typed_as(right))
     static = meet(left, right)
 
-    if runtime is None:
-        assert static is None
-    else:
-        assert numba_type(static) == runtime
+    assert (static is None) if runtime is None else (typed_as(static) == runtime)
 
 
-@given(other=st.one_of(operands, st.just(bool)), narrow=st.sampled_from([i16, u8, u16]))
+@given(
+    other=st.one_of(operands, st.just(bool)),
+    narrow=st.sampled_from([np.int16, np.uint8, np.uint16]),
+)
 def test_integers_narrower_than_32_bits_meet_as_i32(
     *, other: Reading | type[bool], narrow: Scalar
 ) -> None:
     """The C integer promotion holds statically and at runtime, on either side of the operator."""
-    assert meet(narrow, other) is meet(i32, other)
-    assert meet(other, narrow) is meet(other, i32)
-    assert met(numba_type(narrow), numba_type(other)) == met(types.int32, numba_type(other))
-    assert met(numba_type(other), numba_type(narrow)) == met(numba_type(other), types.int32)
+    assert meet(narrow, other) is meet(np.int32, other)
+    assert meet(other, narrow) is meet(other, np.int32)
+    assert met(typed_as(narrow), typed_as(other)) == met(types.int32, typed_as(other))
+    assert met(typed_as(other), typed_as(narrow)) == met(typed_as(other), types.int32)
 
 
 @given(op=st.sampled_from(list(_BINARY)), left=int64_operands, right=int64_operands)
@@ -618,16 +784,18 @@ def test_the_static_reading_agrees_with_the_registered_typing(
     reading = operated(op(), left, right)
     assume(reading is not None)
     # `u32` meeting a literal is the gap `test_a_literal_takes_the_type_of_the_u32_it_meets` holds.
-    assume(not (u32 in (left, right) and Literal in (type(left), type(right))))
+    assume(not (np.uint32 in (left, right) and IntLiteral in (type(left), type(right))))
     # A negative literal shifted by a u64 count: Numba meets it with the plain int64 in the u64.
-    assume(not (op in (ast.LShift, ast.RShift) and is_negative_literal(left) and right is u64))
+    assume(
+        not (op in (ast.LShift, ast.RShift) and is_negative_literal(left) and right is np.uint64)
+    )
 
-    signature = resolved(context, _BINARY[op], numba_type(left), numba_type(right))
+    signature = resolved(context, _BINARY[op], typed_as(left), typed_as(right))
 
-    assert signature.return_type == numba_type(reading)
+    assert signature.return_type == typed_as(reading)
 
 
-@given(op=st.sampled_from(_OPERATORS), left=operands, right=operands)
+@given(op=st.sampled_from([*_ARITHMETIC, *_SHIFTS, *_COMPARISONS]), left=operands, right=operands)
 @settings(deadline=None)
 def test_the_registered_rules_type_operators_as_the_runtime_rule_decides(
     context: CUDATypingContext, *, op: Callable, left: Reading, right: Reading
@@ -636,7 +804,7 @@ def test_the_registered_rules_type_operators_as_the_runtime_rule_decides(
     meeting = decided(left=left, right=right)
     assume(meeting is not None and (op not in _SHIFTS or meeting in (types.int64, types.uint64)))
 
-    signature = resolved(context, op, numba_type(left), numba_type(right))
+    signature = resolved(context, op, typed_as(left), typed_as(right))
 
     assert signature.args == (meeting, meeting)
     assert signature.return_type == (types.boolean if op in _COMPARISONS else meeting)
@@ -646,7 +814,7 @@ def test_a_literal_takes_the_type_of_the_u32_it_meets(context: CUDATypingContext
     """Numba asks the rule about the literal before its plain `int64`, so `u32 + 1` stays u32."""
     signature = resolved(context, operator.add, types.uint32, types.IntegerLiteral(1))
 
-    assert meet(u32, Literal(1)) is u32
+    assert meet(np.uint32, IntLiteral(1)) is np.uint32
     assert signature.return_type == types.uint32
 
 
@@ -656,79 +824,414 @@ def test_the_ported_modules_pass_their_own_annotation_checks(*, module: str) -> 
     assert importlib.import_module(f"patos.cuda.primitives.{module}")
 
 
-@given(mask=st.integers(0, 2**32 - 1), other=st.integers(0, 2**32 - 1))
-def test_a_struct_converts_its_scalars_where_it_is_built(*, mask: int, other: int) -> None:
-    """Building or replacing a record converts every scalar to its declaration."""
-    tables = Tables(np.zeros(2, np.uint64), mask)
-    replaced = tables._replace(mask=other)
-
-    assert (type(tables.mask), type(tables.shift), tables.mask) == (u32, i32, mask)
-    assert (type(replaced.mask), replaced.mask, replaced.slots) == (u32, other, tables.slots)
-    assert tables._fields == ("slots", "mask", "shift")
-
-
-@given(dtype=st.sampled_from([np.uint8, np.int32, np.int64, np.uint32, np.float64]))
-def test_a_struct_refuses_an_array_of_another_element(*, dtype: type[np.generic]) -> None:
-    """An array of the wrong element fails where the record is built or replaced."""
-    tables = Tables(np.zeros(2, np.uint64), 1)
-    wrong = np.zeros(2, dtype)
-
-    with pytest.raises(TypeError, match=f"Tables.slots holds {np.dtype(dtype)}, not the u64"):
-        Tables(wrong, 1)
-    with pytest.raises(TypeError, match="Tables.slots holds"):
-        tables._replace(slots=wrong)
-
-
-@pytest.mark.parametrize("record", ["Tables", "PlainTables"])
-def test_a_record_field_reads_as_its_declared_type(*, record: str) -> None:
-    """A field of a record parameter, a `Struct` or a plain named tuple, has its declared type."""
-    message = rejection(
-        defined(
-            f"def f(tables: {record}) -> u64:\n    return u64(u32(tables.mask) + tables.shift)\n"
-        )
-    )
-
-    assert "`u32(tables.mask)` is a redundant cast: `tables.mask` is already u32" in message
-
-
-@given(kind=st.sampled_from([i16, i32, i64, u16, u32, u64]), given=scalars)
-def test_a_ptx_call_takes_the_stubs_declared_types(
-    context: CUDATypingContext, *, kind: Scalar, given: Scalar
+@given(
+    kind=st.sampled_from([np.int16, np.int32, np.int64, np.uint16, np.uint32, np.uint64]),
+    passed=scalars,
+)
+@settings(deadline=None)
+def test_a_ptx_call_takes_the_stubs_declared_types_which_the_checks_read(
+    context: CUDATypingContext, *, kind: Scalar, passed: Scalar
 ) -> None:
-    """Numba types a call of a PTX stub at its declared types, casting what the caller passes."""
-    stub = ptx("mov.b64 $result, $value;")(
-        defined("def f(value: {kind}) -> {kind}:\n    ...\n", kind=kind)
+    """Numba types a PTX call at the stub's declared types, which the cast checks read as well.
+
+    The caller's argument is cast to them, and casting the result to the type it returns is
+    redundant.
+    """
+    caller = defined(
+        """
+        @ptx("mov.b64 $result, $value;")
+        def g(value: {kind}) -> {kind}:
+            ...
+
+        def f(x: {kind}) -> i64:
+            return {kind}(g(x))
+        """,
+        kind=kind,
     )
     # An intrinsic registers its typing as it is made, after the module's context was built.
     context.refresh()
-    signature = resolved(context, stub, _NUMBA[given])
+    signature = resolved(context, caller.__globals__["g"], _NUMBA[passed])
 
     assert (signature.args, signature.return_type) == ((_NUMBA[kind],), _NUMBA[kind])
+    assert f"`{_NAMES[kind]}(g(x))` is a redundant cast: `g(x)` is already" in rejection(caller)
 
 
-def test_a_ptx_stub_declares_scalars_and_names_only_its_operands() -> None:
+@pytest.mark.parametrize(
+    ("template", "error", "message"),
+    [
+        ("def f(value: u8) -> i32:\n    ...\n", AnnotationError, "16, 32 or 64 bits"),
+        ("def f(value: i32[int]) -> i32:\n    ...\n", AnnotationError, "declares no scalar"),
+        ("def f(other: i32) -> i32:\n    ...\n", KeyError, "value"),
+    ],
+)
+def test_a_ptx_stub_declares_scalars_and_names_only_its_operands(
+    *, template: str, error: type[Exception], message: str
+) -> None:
     """A PTX stub that cannot be lowered is refused where it is defined.
 
-    That is a stub without scalar types or with a byte operand, or a template naming an operand
-    the stub lacks.
+    That is a stub without scalar types or with a byte operand, or a template naming an operand the
+    stub lacks.
     """
-    with pytest.raises(AnnotationError, match="16, 32 or 64 bits"):
-        ptx("mov.b32 $result, $value;")(defined("def f(value: u8) -> i32:\n    ...\n"))
-    with pytest.raises(AnnotationError, match="declares no scalar"):
-        ptx("mov.b32 $result, $value;")(defined("def f(value: Array[i32]) -> i32:\n    ...\n"))
-    with pytest.raises(KeyError, match="other"):
-        ptx("mov.b32 $result, $other;")(defined("def f(value: i32) -> i32:\n    ...\n"))
+    with pytest.raises(error, match=message):
+        ptx("mov.b32 $result, $value;")(defined(template))
 
 
-def test_the_checks_read_a_ptx_stubs_signature() -> None:
-    """A cast of a PTX stub's result to the type it already returns is redundant."""
-    template = """
-    @ptx("mov.b32 $result, $value;")
-    def g(value: i32) -> i32:
-        ...
+@given(
+    per=st.sampled_from(Per),
+    threads=st.sampled_from([32, 64, 128, 1024]),
+    items=st.integers(0, 2**40),
+)
+def test_a_grid_gives_each_item_its_lanes_and_caps_a_striding_kernel(
+    *, per: Per, threads: int, items: int
+) -> None:
+    """Each item gets the lanes it runs on with no block to spare, and striding caps the blocks.
 
-    def f(x: i32) -> i64:
-        return i32(g(x))
+    An item runs on a thread, a warp or a whole block.
     """
+    plain, striding = (
+        kernel(per=per, threads=threads, strided=strided)(noop) for strided in (False, True)
+    )
+    lanes = {Per.THREAD: 1, Per.WARP: 32, Per.BLOCK: threads}[per]
+    blocks, block = plain.grid(items)
+    cap = striding.grid(2**50)[0]
 
-    assert "`i32(g(x))` is a redundant cast: `g(x)` is already i32" in rejection(defined(template))
+    assert block == striding.grid(items)[1] == threads
+    assert (blocks - 1) * threads < items * lanes <= blocks * threads
+    assert striding.grid(items)[0] == min(blocks, cap) and cap < plain.grid(2**50)[0]
+
+
+@gpu
+@given(
+    dtype=st.sampled_from([np.uint64, np.uint8, np.int64, np.uint32, np.float64]),
+    shape=st.sampled_from([(4,), (2, 4)]),
+    strided=st.booleans(),
+    mask=st.one_of(st.integers(-(2**33), 2**33), st.floats(-1e10, 1e10)),
+    shift=st.one_of(st.integers(-(2**32), 2**32), st.floats(-1e10, 1e10)),
+)
+@settings(deadline=None, max_examples=50)
+def test_a_record_names_every_field_it_refuses_at_once_and_converts_the_rest(
+    *, dtype: type[np.generic], shape: tuple[int, ...], strided: bool, mask: float, shift: float
+) -> None:
+    """A record names every field it refuses at once, and builds when it refuses none.
+
+    A scalar converts with an overflow check and never from a float, and a host array of the
+    element and dimensions declared uploads contiguous, whatever its strides.
+    """
+    slots = np.zeros(shape, dtype)[..., :: 1 + strided]
+    fits = {
+        "slots": dtype is np.uint64 and len(shape) == 1,
+        "mask": isinstance(mask, int) and 0 <= mask < 2**32,
+        "shift": isinstance(shift, int) and -(2**31) <= shift < 2**31,
+    }
+    record = outcome(lambda: Tables(slots, mask, shift))
+
+    refused = record if isinstance(record, set) else set()
+    assert refused == {name for name, fit in fits.items() if not fit}
+    assert isinstance(record, set) or (
+        [type(record.mask), type(record.shift), record.mask, record.shift]
+        == [np.uint32, np.int32, mask, shift]
+        and cp.asarray(record.slots).flags.c_contiguous
+    )
+
+
+_REFUSALS: dict[str, tuple[Refusal, type[Exception], str]] = {
+    "missing fields": (
+        lambda _: Tables(),
+        TypeError,
+        "Tables: slots is missing; mask is missing; shift is missing",
+    ),
+    "too many values": (
+        lambda tables: Tables(tables.slots, 1, 2, 3),
+        TypeError,
+        "Tables has 3 fields, 4 given",
+    ),
+    "a field given twice": (
+        lambda tables: Tables(tables.slots, slots=tables.slots, mask=1, shift=1),
+        TypeError,
+        "Tables given slots twice",
+    ),
+    "an unknown field": (
+        lambda tables: Tables(tables.slots, 1, 2, colour=3),
+        TypeError,
+        "Tables has no field colour",
+    ),
+    "a record of another class": (
+        lambda tables: Lookup(3, tables.slots, cp.zeros((1, 6), np.uint64)),
+        TypeError,
+        "Lookup: tables is a int, not the Tables declared",
+    ),
+    "a scalar given an array": (
+        lambda tables: Tables(tables.slots, tables.slots, 1),
+        TypeError,
+        "Tables: mask is a ndarray, not the u32 declared",
+    ),
+    "a replacement that does not fit": (
+        lambda tables: copy.replace(tables, mask=-1),
+        TypeError,
+        "Tables: mask Python integer -1 out of bounds for uint32",
+    ),
+    "an assignment": (
+        lambda tables: Tables.__setattr__(tables, "mask", 1),
+        AttributeError,
+        "Tables is frozen; copy.replace it",
+    ),
+    "a deletion": (
+        lambda tables: Tables.__delattr__(tables, "mask"),
+        AttributeError,
+        "Tables is frozen",
+    ),
+    "a subclass": (
+        lambda _: type("More", (Tables,), {"__annotations__": {"extra": u8}}),
+        TypeError,
+        "More extends a record, which takes no subclass",
+    ),
+    "a kernel taking self outside a record": (
+        lambda _: type("Plain", (), {"probe": kernel(member)}),
+        TypeError,
+        "kernel probe takes `self`, which only a Struct gives it",
+    ),
+    "a constant of another kind": (
+        lambda tables: Window(tables.slots, 2.5),
+        TypeError,
+        "Window: width is a float, not the int declared",
+    ),
+    "zeroing a field given no size": (
+        lambda _: Tables.take(Workspace(cp), zeroed=("mask",), slots=2, mask=1, shift=0),
+        TypeError,
+        "Tables zeroes mask, given no size",
+    ),
+    "taking an open element": (
+        lambda tables: Lookup.take(
+            Workspace(cp), tables=tables, keys=2, found=cp.zeros((1, 6), np.uint64)
+        ),
+        TypeError,
+        "Lookup: keys is int, not the",
+    ),
+    "a strided device array, where the record marshals": (
+        lambda tables: argument(Tables(tables.slots[::2], 1, 2)),
+        TypeError,
+        "Tables.slots is strided, not contiguous",
+    ),
+}
+
+
+@gpu
+@pytest.mark.parametrize(("refusal", "error", "message"), _REFUSALS.values(), ids=_REFUSALS)
+def test_a_record_refuses_what_names_no_field_or_would_change_it(
+    tables: Tables, *, refusal: Refusal, error: type[Exception], message: str
+) -> None:
+    """Records are built whole from their own fields, never changed in place, never extended."""
+    with pytest.raises(error, match=re.escape(message)):
+        refusal(tables)
+
+
+@gpu
+@given(mask=st.integers(0, 2**32 - 1), changed=st.integers(0, 2**32 - 1))
+@settings(deadline=None, max_examples=25)
+def test_a_record_rebuilds_through_its_validation_and_copies_as_its_arrays_do(
+    *, mask: int, changed: int
+) -> None:
+    """`copy.replace` and `of` rebuild a record through its validation, sharing its arrays.
+
+    A field `of`'s source lacks takes its default, a shallow copy shares the arrays, and a deep
+    copy or a pickle copies them.
+    """
+    tables = Tables(np.arange(4, dtype=np.uint64), mask, 3)
+    rebuilt = [
+        copy.replace(tables, mask=changed),
+        Tables.of({"slots": tables.slots, "mask": changed, "shift": 3, "stray": 0}),
+        Tables.of(tables, mask=changed),
+    ]
+    copies = [copy.copy(tables), copy.deepcopy(tables), pickle.loads(pickle.dumps(tables))]
+    lookup = Lookup.of(
+        {"tables": tables, "keys": tables.slots, "found": cp.zeros((1, 6), np.uint64)}
+    )
+
+    assert [(record.slots is tables.slots, record.mask) for record in rebuilt] == [
+        (True, changed)
+    ] * 3
+    assert [(record.slots is tables.slots, record.slots.get().tolist()) for record in copies] == [
+        (True, [0, 1, 2, 3]), (False, [0, 1, 2, 3]), (False, [0, 1, 2, 3])
+    ]  # fmt: skip
+    assert {type(record.mask) for record in (*rebuilt, *copies)} == {np.uint32}
+    assert (lookup.exact, lookup.tables is tables) == (True, True)
+    assert repr(tables) == f"Tables(slots=u64[4], mask=np.uint32({mask}), shift=np.int32(3))"
+
+
+@gpu
+@given(size=st.integers(1, 64), zeroed=st.booleans(), junk=st.integers(1, 2**63 - 1))
+@settings(deadline=None, max_examples=25)
+def test_take_draws_a_sized_array_field_from_its_role_in_the_workspace(
+    *, size: int, zeroed: bool, junk: int
+) -> None:
+    """A sized array field comes from the workspace under the record's role for that field.
+
+    The role is the record's qualified name and the field's, the buffer is in the declared dtype
+    and zeroed when asked, and every other field is given as it is.
+    """
+    workspace = Workspace(cp)
+    role = f"{__name__}.Tables.slots"
+    workspace.take(role, 64, np.uint64).fill(junk)
+    tables = Tables.take(
+        workspace, zeroed={"slots"} if zeroed else (), slots=size, mask=size, shift=-size
+    )
+
+    assert (list(workspace), cp.shares_memory(tables.slots, workspace.buffers[role])) == (
+        [role],
+        True,
+    )
+    assert tables.slots.get().tolist() == [0 if zeroed else junk] * size
+    assert (tables.mask, tables.shift) == (size, -size)
+
+
+@gpu
+def test_device_members_answer_on_the_device_and_leave_the_host_class() -> None:
+    """A record's kernel reads a record field through its operators, property and method.
+
+    It compiles once per element its open array meets, whether a field is a CuPy array or any
+    other device array, and the host class keeps none of the device members.
+    """
+    hashed = _DEVICE.Hashed(np.arange(8, dtype=np.uint64) * 9, 7, 3)
+    keys = np.array([0, 9, 20, 63], np.uint8)
+    narrow = _DEVICE.Probe(hashed, keys, cp.zeros((4, 6), np.uint64))
+    wide = _DEVICE.Probe(
+        hashed, keys.astype(np.uint32), cuda.device_array((4, 6), np.uint64), exact=False
+    )
+    for probe in (narrow, wide, narrow):
+        probe.probe[len(keys)](5)
+
+    assert np.array_equal(narrow.found.get(), probed(keys, exact=True, base=5))
+    assert np.array_equal(cp.asarray(wide.found).get(), probed(keys, exact=False, base=5))
+    assert len(_DEVICE.Probe.probe.compiled) == 2
+    assert {"__getitem__", "__len__", "__contains__", "capacity", "shifted"}.isdisjoint(
+        vars(_DEVICE.Hashed)
+    )
+
+
+@gpu
+def test_a_constant_field_compiles_into_the_device_type_and_marshals_nothing() -> None:
+    """Each width compiles its own kernel, which reads the width as a literal.
+
+    The record passes the kernel its array alone, since the width is part of its type.
+    """
+    values = cp.arange(8, dtype=np.uint64)
+    windows = [Window(values, 2), Window(values, 3), Window(values, 2)]
+    sums = [cp.zeros(8, np.uint64) for _ in windows]
+    for window, out in zip(windows, sums, strict=True):
+        window.sums[8](out)
+
+    assert [out.get().tolist() for out in sums] == [
+        [sum(range(start, start + width)) if start + width <= 8 else 0 for start in range(8)]
+        for width in (2, 3, 2)
+    ]
+    assert len(Window.sums.compiled) == 2
+    assert all(argument(window)[1] == argument(values)[1] for window in windows)
+
+
+@gpu
+@given(
+    scalars=st.tuples(
+        st.integers(0, 2**8 - 1), st.integers(-(2**15), 2**15 - 1), st.integers(0, 2**32 - 1),
+        st.booleans(),
+    ),
+    shape=st.tuples(st.integers(1, 4), st.integers(1, 4)),
+    wrap=st.sampled_from([int, np.int64]),
+)  # fmt: skip
+@settings(deadline=None, max_examples=25)
+def test_a_launch_converts_its_scalars_and_compiles_one_signature(
+    *,
+    scalars: tuple[int, int, int, bool],
+    shape: tuple[int, int],
+    wrap: Callable[[int], int | np.int64],
+) -> None:
+    """A launch converts Python or numpy integers to the declared scalars, compiling once.
+
+    A launch over no items marshals and refuses nothing.
+    """
+    row, table = cp.zeros(4, np.int64), cp.zeros(shape, np.int16)
+    _DEVICE.scatter[1](row, table, *map(wrap, scalars))
+    _DEVICE.scatter[0](row.astype(np.int32), table, 1.5, 0, 0, True)
+
+    assert row.get().tolist() == list(scalars)
+    assert table.get().ravel().tolist() == [0] * (shape[0] * shape[1] - 1) + [scalars[1]]
+    assert [kinds for kinds, _ in _DEVICE.scatter.compiled.values()] == [
+        (types.Array(types.int64, 1, "C"), types.Array(types.int16, 2, "C"),
+         types.uint8, types.int16, types.uint32, types.boolean)
+    ]  # fmt: skip
+
+
+def scattered(**changes: int | float | bool | cp.ndarray) -> None:
+    """Launch `scatter` over one item with fitting arguments, `changes` replacing some of them.
+
+    changes: arguments by parameter name; a fitting `row` is an int64 array of shape `[4]` and a
+        fitting `table` an int16 array of shape `[2, 3]`.
+    """
+    fitting = {"row": cp.zeros(4, np.int64), "table": cp.zeros((2, 3), np.int16)}
+    _DEVICE.scatter[1](
+        *(fitting | {"small": 1, "signed": 1, "wide": 1, "flag": True} | changes).values()
+    )
+
+
+_UNDECLARED = {
+    "element": (
+        lambda: scattered(row=cp.zeros(4, np.int32)),
+        TypeError,
+        "scatter's `row` receives array(int32, 1d, C) where i64[int] is declared",
+    ),
+    "dimensions": (
+        lambda: scattered(row=cp.zeros((2, 2), np.int64)),
+        TypeError,
+        "scatter's `row` receives array(int64, 2d, C) where i64[int] is declared",
+    ),
+    "strided": (
+        lambda: scattered(row=cp.zeros(8, np.int64)[::2]),
+        TypeError,
+        "scatter's `row` receives array(int64, 1d, A) where i64[int] is declared",
+    ),
+    "transposed": (
+        lambda: scattered(table=cp.zeros((3, 2), np.int16).T),
+        TypeError,
+        "scatter's `table` receives array(int16, 2d, A) where i16[int, int] is declared",
+    ),
+    "open element": (
+        lambda: total[4](cp.zeros(4, np.int32), cp.zeros(1, np.uint64)),
+        TypeError,
+        "total's `values` receives array(int32, 1d, C) where",
+    ),
+    "overflow": (lambda: scattered(small=256), OverflowError, "out of bounds for uint8"),
+    "float": (lambda: scattered(signed=1.5), TypeError, "is a float, not the i16 declared"),
+    "device call": (
+        lambda: _DEVICE.delegate[1](cp.zeros(2, np.int32), cp.zeros(1, np.uint8)),
+        TypingError,
+        "first's `values` receives array(int32, 1d, C) where u8[int] is declared",
+    ),
+}
+
+
+@gpu
+@pytest.mark.parametrize(("launch", "error", "message"), _UNDECLARED.values(), ids=_UNDECLARED)
+def test_a_launch_refuses_what_a_parameter_does_not_declare(
+    *, launch: Callable[[], None], error: type[Exception], message: str
+) -> None:
+    """A launch refuses an argument its parameter does not declare, naming the parameter.
+
+    An array of another element, dimension count or layout is refused, a scalar converts or fails,
+    and a device function refuses such an array at the call.
+    """
+    with pytest.raises(error, match=re.escape(message)):
+        launch()
+
+
+@gpu
+def test_an_open_element_compiles_once_per_dtype_it_meets() -> None:
+    """`unsigned[int]` takes a CuPy or any other device array of each unsigned dtype it meets."""
+    sums = cp.zeros(1, np.uint64)
+    for values in (
+        cp.arange(5, dtype=np.uint8),
+        cuda.to_device(np.arange(5, dtype=np.uint16)),
+        cp.arange(5, dtype=np.uint32),
+        cp.arange(5, dtype=np.uint8),
+    ):
+        total[5](values, sums)
+
+    assert (sums.get().tolist(), len(total.compiled)) == ([40], 3)

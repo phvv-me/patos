@@ -5,11 +5,18 @@ import pytest
 
 from patos import Registry
 
-# `patos.torch` sits behind an optional extra, so its suite only collects where the extra is
-# installed. Skipping at collection keeps the core gate honest instead of importing torch here.
-collect_ignore = (
-    [] if all(importlib.util.find_spec(name) for name in ("numpy", "torch")) else ["test_torch.py"]
-)
+# An extra's suite collects only where the extra is installed, so the core gate never imports
+# torch or the `cuda` extra; the CUDA host runtime needs numpy alone.
+_EXTRAS = {
+    "test_torch.py": ("numpy", "torch"),
+    "test_cuda_types.py": ("numba_cuda", "cupy", "cuda"),
+    "test_cuda_runtime.py": ("numpy",),
+}
+collect_ignore = [
+    suite
+    for suite, modules in _EXTRAS.items()
+    if not all(importlib.util.find_spec(name) for name in modules)
+]
 
 
 class Codec(Registry, ABC):
