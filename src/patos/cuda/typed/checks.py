@@ -4,12 +4,25 @@ element, and no cast repeats what an annotation or an operator already does."""
 import ast
 from collections.abc import Callable, Iterator
 from functools import partial
-from types import NoneType
+from types import FunctionType, NoneType
 
 from .arithmetic import combined, operated
-from .declarations import ArrayOf, Declared, Kind, Returns, is_scalar, named
+from .declarations import Declared, Kind, Returns, is_scalar, named
 from .inference import Inference
 from .reading import Function
+from .scalars import ArrayOf
+
+
+def read(function: FunctionType, *, kernel: bool, owner: type | None = None) -> Function:
+    """`function` read and checked.
+
+    owner: the record class `function` is a member of.
+    Raises `AnnotationError` naming every line whose annotations are missing, contradict each
+    other, or are repeated by a cast.
+    """
+    read = Function(function, kernel=kernel, owner=owner)
+    Checks(read, Inference(read)).run()
+    return read
 
 
 class Checks:
@@ -124,7 +137,7 @@ class Checks:
         """The type a store to `target` converts to, and what does: a declaration or an array."""
         if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
             array = self.function.parameters.get(target.value.id)
-            if isinstance(array, ArrayOf):
+            if isinstance(array, ArrayOf) and array.concrete:
                 return array.element, f"the store into `{target.value.id}`"
         return self.function.declared_scalar(target), f"the declaration of `{ast.unparse(target)}`"
 

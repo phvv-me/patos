@@ -1,0 +1,112 @@
+"""A record on the device: its own Numba type, a C struct of its fields, and the device methods,
+operators and properties its class declares.
+
+A record is no tuple to Numba, so `len`, indexing and `in` mean only what its class declares.
+"""
+
+import inspect
+import operator
+from collections.abc import Callable
+from functools import cache
+from typing import TYPE_CHECKING, ClassVar
+
+from llvmlite import ir
+from numba import types
+from numba.cuda import cgutils
+from numba.cuda.core.imputils import impl_ret_borrowed
+from numba.cuda.cudadecl import registry as typing_registry
+from numba.cuda.cudaimpl import registry as lowering_registry
+from numba.cuda.dispatcher import CUDADispatcher
+from numba.cuda.extending import (
+    models,
+    overload,
+    overload_attribute,
+    overload_method,
+    register_model,
+)
+from numba.cuda.typing.templates import AttributeTemplate
+
+if TYPE_CHECKING:
+    from .struct import Struct
+
+# The host protocol a device operator answers, where `operator` names it differently.
+_BUILTINS: dict[str, Callable] = {"__len__": len, "__abs__": abs}
+
+
+class RecordType(types.Type):
+    """The device type of one record class over the types its fields hold.
+
+    Each record class has its own subclass, which its device members are registered on.
+    """
+
+    cls: ClassVar[type[Struct]]
+
+    def __init__(self, fields: tuple[tuple[str, types.Type], ...]) -> None:
+        self.fields = fields
+        self.members = dict(fields)
+        held = ", ".join(f"{name}: {kind}" for name, kind in fields)
+        super().__init__(f"{self.cls.__module__}.{self.cls.__qualname__}({held})")
+
+
+class _Model(models.StructModel):
+    def __init__(self, manager, record: RecordType) -> None:
+        super().__init__(manager, record, list(record.fields))
+
+
+@typing_registry.register_attr
+class _Fields(AttributeTemplate):
+    key = RecordType
+
+    def generic_resolve(self, record: RecordType, attr: str) -> types.Type | None:
+        return record.members.get(attr)
+
+
+@lowering_registry.lower_getattr_generic(RecordType)
+def _field(context, builder: ir.IRBuilder, record: RecordType, value: ir.Value, attr: str):
+    fields = cgutils.create_struct_proxy(record)(context, builder, value=value)
+    return impl_ret_borrowed(context, builder, record.members[attr], getattr(fields, attr))
+
+
+@cache
+def record_type(cls: type[Struct]) -> type[RecordType]:
+    """The device type of `cls`, made and given its struct model once."""
+    kind = type(f"{cls.__name__}Type", (RecordType,), {"cls": cls})
+    register_model(kind)(_Model)
+    return kind
+
+
+def register_member(
+    cls: type[Struct], name: str, device: CUDADispatcher, *, attribute: bool
+) -> None:
+    """Make device function `device` the device member `name` of `cls`'s records.
+
+    A dunder registers the operator it implements (`__getitem__` indexing, `__len__` `len`), an
+    attribute is read without a call, and any other name is a method.
+    """
+    owner = record_type(cls)
+    typing = _overload(owner, device)
+    if attribute:
+        overload_attribute(owner, name)(typing)
+    elif name.startswith("__"):
+        overload(_BUILTINS.get(name) or getattr(operator, name))(typing)
+    else:
+        overload_method(owner, name)(typing)
+
+
+def _overload(owner: type[RecordType], device: CUDADispatcher) -> Callable:
+    """The overload typing that answers, when its first argument is an `owner`, a function of
+    `device`'s own parameters calling it.
+
+    Numba's IR inliner takes no star arguments, so the parameters are spelled out, and the
+    generated globals carry reserved names no parameter can shadow.
+    """
+    names = list(inspect.signature(device.py_func).parameters)
+    spelled = ", ".join(names)
+    namespace = {"_patos_owner": owner, "_patos_device": device}
+    exec(
+        f"def _patos_forwarded({spelled}):\n    return _patos_device({spelled})\n"
+        f"def _patos_typing({spelled}):\n"
+        f"    if isinstance({names[0]}, _patos_owner):\n        return _patos_forwarded\n",
+        namespace,
+    )
+    return namespace["_patos_typing"]

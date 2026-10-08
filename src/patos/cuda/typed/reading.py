@@ -12,7 +12,6 @@ from typing import TypeVar
 import numpy as np
 
 from .declarations import (
-    ArrayOf,
     Declared,
     Evaluated,
     Record,
@@ -23,6 +22,7 @@ from .declarations import (
     named,
     unaliased,
 )
+from .scalars import ArrayOf, canonical
 
 
 class AnnotationError(TypeError):
@@ -34,16 +34,24 @@ class Function:
     """One device function or kernel as written, with every issue its annotations raise.
 
     kernel: whether `function` is a kernel, which returns None.
+    owner: the record class `function` is a member of, which types its unannotated `self`.
     """
 
-    def __init__(self, function: FunctionType, *, kernel: bool = False) -> None:
+    def __init__(
+        self, function: FunctionType, *, kernel: bool = False, owner: type | None = None
+    ) -> None:
         self.function = function
         self.kernel = kernel
+        self.owner = owner
+        # A member's annotations may name the record it is defined in, before the module does.
+        self.members = {} if owner is None else {owner.__name__: owner}
         self.tree, self.definition = self._parsed(function)
         self.namespace = self._namespace(function)
-        # Device code is generic over type variables only.
+        # Device code is generic over type variables only, its own and its record's.
         self.type_params = tuple(
-            parameter for parameter in function.__type_params__ if isinstance(parameter, TypeVar)
+            parameter
+            for parameter in (*function.__type_params__, *getattr(owner, "__type_params__", ()))
+            if isinstance(parameter, TypeVar)
         )
         self.issues: list[tuple[int, str]] = []
         self.parameters = {
@@ -64,7 +72,7 @@ class Function:
         """The scalar type `node` converts to when it is a cast `T(value)`."""
         if isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords:
             target = resolved(node.func, self.namespace)
-            return target if is_scalar(target) else None
+            return canonical(target) if is_scalar(target) else None
         return None
 
     def declared_scalar(self, target: ast.expr) -> type[np.generic] | None:
@@ -124,7 +132,7 @@ class Function:
         """
         try:
             value = annotationlib.ForwardRef(ast.unparse(node)).evaluate(
-                globals=self.namespace, type_params=self.type_params
+                globals=self.namespace, locals=self.members, type_params=self.type_params
             )
         except NameError:
             value = None
@@ -172,6 +180,8 @@ class Function:
         declarations.setdefault(name, kind)
 
     def _parameter(self, argument: ast.arg) -> Declared:
+        if argument.annotation is None and self.owner is not None and argument.arg == "self":
+            return declared(self.owner)
         if argument.annotation is None:
             self.issue(argument, f"parameter `{argument.arg}` has no annotation")
             return None
@@ -208,7 +218,7 @@ def resolved(node: ast.expr, namespace: dict[str, Evaluated]) -> Evaluated:
 
 def _has_array(declared: Returns) -> bool:
     if isinstance(declared, Record):
-        return any(_has_array(kind) for _, kind in declared.fields)
+        return any(_has_array(kind) for kind in declared.cls.declarations().values())
     if isinstance(declared, tuple):
         return any(_has_array(element) for element in declared)
     return isinstance(declared, ArrayOf)

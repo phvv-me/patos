@@ -24,7 +24,6 @@ from numba.core.typing import templates
 from numba.cuda.cudadecl import registry
 
 from .declarations import Declared, Kind, Literal, is_integer
-from .scalars import i32, i64, u64
 
 _ARITHMETIC = (
     operator.add, operator.sub, operator.mul, operator.floordiv, operator.mod,
@@ -66,7 +65,7 @@ def combined(left: Declared, right: Declared) -> Kind:
         and is_integer(right)
         and _is_signed(left) == _is_signed(right)
     ):
-        return i64 if _is_signed(left) else u64
+        return np.int64 if _is_signed(left) else np.uint64
     return met
 
 
@@ -103,7 +102,7 @@ def _is_signed(kind: type[np.integer]) -> bool:
 
 
 def _promoted(kind: Declared) -> Declared:
-    return i32 if is_integer(kind) and np.dtype(kind).itemsize < 4 else kind
+    return np.int32 if is_integer(kind) and np.dtype(kind).itemsize < 4 else kind
 
 
 def _shifted(left: Declared, right: Declared) -> Kind:
@@ -113,9 +112,9 @@ def _shifted(left: Declared, right: Declared) -> Kind:
         return met
     # Numba shifts in 64 bits, keeping the signedness of the value shifted.
     if isinstance(left, Literal):
-        return i64 if is_integer(right) or isinstance(right, Literal) else None
+        return np.int64 if is_integer(right) or isinstance(right, Literal) else None
     if is_integer(left) and (is_integer(right) or isinstance(right, Literal)):
-        return i64 if _is_signed(left) else u64
+        return np.int64 if _is_signed(left) else np.uint64
     return None
 
 

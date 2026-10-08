@@ -1,16 +1,20 @@
-"""The scalar types device code spells, and the annotation of an array."""
+"""The numeric types device code spells. Each is a scalar type and, subscripted by its shape, an
+array of it: `u8[int]` a vector, `i16[int, int]` a table, as numba spells `uint8[:]` and
+`int16[:, :]`. Called, a type converts a value to its scalar (`u64(first)`).
 
-from typing import TYPE_CHECKING, Protocol, overload
+`number` and `unsigned` are open element types, for an array whose element is any number or any
+unsigned integer (`unsigned[int]`).
+"""
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol, Self, SupportsInt, cast, final, overload
 
 import numpy as np
 
-i16 = np.int16
-i32 = np.int32
-i64 = np.int64
-u8 = np.uint8
-u16 = np.uint16
-u32 = np.uint32
-u64 = np.uint64
+if TYPE_CHECKING:
+    from numpy.typing import DTypeLike
+
+    from ..runtime.streams import DeviceStream
 
 
 class Shaped(Protocol):
@@ -23,43 +27,169 @@ class Shaped(Protocol):
     def dtype(self) -> np.dtype: ...
 
 
-class Array[T: np.generic]:
-    """An array of `T`, as a kernel or device function receives one and as a `Struct` holds one.
+@final
+@dataclass(frozen=True)
+class ArrayOf:
+    """An array annotation: its element type, concrete or open, and its dimension count.
 
-    Numba types an array from what the caller passes, so `chars: Array[u8]` converts nothing: it
-    fails compilation when `chars` holds anything but `u8`. The members exist for type checkers
-    only: indexing and `size` read in a kernel as they do on the device, and the host reads a
-    record's array as the numpy or cupy array it holds.
+    An array is contiguous, so every kernel compiles one signature.
     """
 
-    if TYPE_CHECKING:
+    element: type[np.number]
+    ndim: int
+
+    @property
+    def concrete(self) -> bool:
+        """Whether the element is one scalar type, which fixes the array's dtype."""
+        return self.element in _CONCRETE
+
+    def admits(self, dtype: np.dtype, ndim: int) -> bool:
+        """Whether an array of `dtype` and `ndim` dimensions is one this annotation declares."""
+        if ndim != self.ndim:
+            return False
+        return dtype == self.element if self.concrete else np.issubdtype(dtype, self.element)
+
+
+def converted(
+    kind: type[np.number] | type[bool], value: int | float | np.number
+) -> np.number | bool:
+    """`value` as scalar `kind`, an integer checked for overflow and a float never truncated into
+    an integer; `TypeError` or `OverflowError` says why it cannot be."""
+    if kind is bool:
+        return bool(value)
+    if isinstance(value, np.number) and type(value) is kind:
+        return value
+    if isinstance(value, int | np.integer):
+        return kind(int(value))
+    if isinstance(value, float | np.floating) and not issubclass(kind, np.integer):
+        return cast("np.number", np.asarray(value, dtype=kind)[()])
+    raise TypeError(f"is a {type(value).__name__}, not a {kind.__name__}")
+
+
+_CONCRETE = frozenset(np.sctypeDict.values())
+
+if TYPE_CHECKING:
+
+    class Numeric[T: np.number, *Shape]:
+        """What a type checker knows of a numeric value or of an array of them.
+
+        Device code computes with the scalars; host code reads a record's arrays as the numpy or
+        cupy arrays they hold, so an array answers what both modules' arrays do.
+        """
+
         size: int
         shape: tuple[int, ...]
+        ndim: int
         dtype: np.dtype
         nbytes: int
 
         @overload
-        def __getitem__(self, index: int | np.integer) -> T: ...
+        def __getitem__(self, index: int | np.integer | Numeric) -> T: ...
 
         @overload
-        def __getitem__(self, index: slice | Shaped) -> Array[T]: ...
+        def __getitem__(self, index: slice | Shaped) -> Self: ...
 
-        def __getitem__(self, index: int | np.integer | slice | Shaped) -> T | Array[T]: ...
+        def __getitem__(self, index: int | np.integer | Numeric | slice | Shaped) -> T | Self: ...
 
         def __setitem__(
-            self, index: int | np.integer | slice | Shaped, value: T | int | Shaped
+            self, index: int | np.integer | slice | Shaped, value: Operand
         ) -> None: ...
 
-        def __add__(self, value: int | Shaped) -> Array[T]: ...
+        def __add__(self, value: Operand) -> Self: ...
+        def __radd__(self, value: Operand) -> Self: ...
+        def __sub__(self, value: Operand) -> Self: ...
+        def __rsub__(self, value: Operand) -> Self: ...
+        def __mul__(self, value: Operand) -> Self: ...
+        def __rmul__(self, value: Operand) -> Self: ...
+        def __floordiv__(self, value: Operand) -> Self: ...
+        def __mod__(self, value: Operand) -> Self: ...
+        def __and__(self, value: Operand) -> Self: ...
+        def __rand__(self, value: Operand) -> Self: ...
+        def __or__(self, value: Operand) -> Self: ...
+        def __ror__(self, value: Operand) -> Self: ...
+        def __xor__(self, value: Operand) -> Self: ...
+        def __lshift__(self, value: Operand) -> Self: ...
+        def __rshift__(self, value: Operand) -> Self: ...
+        def __rxor__(self, value: Operand) -> Self: ...
+        def __rlshift__(self, value: Operand) -> Self: ...
+        def __rrshift__(self, value: Operand) -> Self: ...
+        def __rfloordiv__(self, value: Operand) -> Self: ...
+        def __rmod__(self, value: Operand) -> Self: ...
+        def __neg__(self) -> Self: ...
+        def __invert__(self) -> Self: ...
+        def __lt__(self, value: Operand) -> bool: ...
+        def __le__(self, value: Operand) -> bool: ...
+        def __gt__(self, value: Operand) -> bool: ...
+        def __ge__(self, value: Operand) -> bool: ...
+        def __int__(self) -> int: ...
+        def __index__(self) -> int: ...
 
-        def __sub__(self, value: int | Shaped) -> Array[T]: ...
+        def astype(self, dtype: DTypeLike) -> Numeric[np.number, *Shape]: ...
 
-        def __mul__(self, value: int) -> Array[T]: ...
+        def view(self, dtype: DTypeLike) -> Numeric[np.number, *Shape]: ...
 
-        def __neg__(self) -> Array[T]: ...
+        def copy(self) -> Self: ...
 
-        def astype(self, dtype: type[np.generic] | np.dtype) -> Array[np.generic]: ...
+        def fill(self, value: int) -> None: ...
 
-        def copy(self) -> Array[T]: ...
+        def get(self, *, stream: DeviceStream | None = None) -> np.ndarray: ...
 
-        def view(self, dtype: type[np.generic] | np.dtype) -> Array[np.generic]: ...
+    # What arithmetic meets a numeric value with.
+    type Operand = int | np.integer | Shaped | Numeric
+
+    class u8[*Shape = *tuple[()]](Numeric[np.uint8, *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> np.uint8: ...
+
+    class u16[*Shape = *tuple[()]](Numeric[np.uint16, *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> np.uint16: ...
+
+    class u32[*Shape = *tuple[()]](Numeric[np.uint32, *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> np.uint32: ...
+
+    class u64[*Shape = *tuple[()]](Numeric[np.uint64, *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> np.uint64: ...
+
+    class i16[*Shape = *tuple[()]](Numeric[np.int16, *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> np.int16: ...
+
+    class i32[*Shape = *tuple[()]](Numeric[np.int32, *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> np.int32: ...
+
+    class i64[*Shape = *tuple[()]](Numeric[np.int64, *Shape]):
+        def __new__(cls, value: SupportsInt = 0) -> np.int64: ...
+
+    class unsigned[*Shape](Numeric[np.unsignedinteger, *Shape]): ...
+
+    class number[*Shape](Numeric[np.number, *Shape]): ...
+
+else:
+
+    def _numeric(name: str, base: type[np.number]) -> type:
+        """`base` as a numeric type: called, its scalar; subscripted by a shape, an array of it.
+
+        A subclass, so numba types a cast through it as one of `base`.
+        """
+
+        def __new__(cls, value=0):
+            return base(value)
+
+        def __class_getitem__(cls, shape):
+            dimensions = shape if isinstance(shape, tuple) else (shape,)
+            if any(dimension is not int for dimension in dimensions):
+                raise TypeError(f"{name}[{shape!r}]: an array names each dimension `int`")
+            return ArrayOf(base, len(dimensions))
+
+        members = {"__slots__": (), "__new__": __new__, "__module__": __name__}
+        return type(name, (base,), members | {"__class_getitem__": classmethod(__class_getitem__)})
+
+    u8, u16, u32, u64 = (_numeric(f"u{n}", getattr(np, f"uint{n}")) for n in (8, 16, 32, 64))
+    i16, i32, i64 = (_numeric(f"i{n}", getattr(np, f"int{n}")) for n in (16, 32, 64))
+    unsigned = _numeric("unsigned", np.unsignedinteger)
+    number = _numeric("number", np.number)
+
+
+def canonical(kind: type[np.number]) -> type[np.number]:
+    """The numpy type a numeric type names, which is what patos reads and numba types."""
+    return next(
+        base for base in kind.__mro__ if issubclass(base, np.number) and base.__module__ == "numpy"
+    )

@@ -2,28 +2,19 @@
 
 Every `return` converts to the return annotation and every assignment to a declared local to its
 declaration, a conditional expression converting branch by branch so mixed branches never unify
-through a float. Every `Array[T]` parameter is checked on entry, and a scalar parameter converts
-there unless Numba's own signature declares it, as it does a device function's (`decorators`).
-The annotations are then dropped, and Numba compiles the IR explicit casts would have given.
+through a float. Parameters need nothing: a device function compiles at the types its parameters
+declare (`decorators`) and a kernel's launch converts its scalars (`kernels`). The annotations
+are then dropped, and Numba compiles the IR explicit casts would have given.
 """
 
 import ast
-import itertools
 from collections.abc import Sequence
-from types import CodeType, FunctionType, ModuleType
+from types import CodeType, FunctionType
 
 import numpy as np
-from numba import types
-from numba.core.errors import TypingError
-from numba.cuda.extending import intrinsic
 
-from .declarations import ArrayOf, Declared, Record, Returns, Signature, is_scalar, numba_type
+from .declarations import Returns, Signature, is_scalar
 from .reading import Function
-
-# One intrinsic per checked array, each naming the parameter it checks, gathered where a
-# rewritten function reaches them through a single global.
-_EXPECTATIONS = ModuleType("patos.cuda.typed.expectations")
-_EXPECTED = itertools.count()
 
 
 class Rewrite:
@@ -40,7 +31,7 @@ class Rewrite:
         original = self.function.function
         # The module's own globals, updated in place, so a name the module defines later resolves.
         namespace = self.function.namespace
-        namespace.update(_patos_numpy=np, _patos_expectations=_EXPECTATIONS)
+        namespace.update(_patos_numpy=np)
         rebuilt = FunctionType(self._code(), namespace, original.__name__)
         rebuilt.__doc__ = original.__doc__
         rebuilt.__qualname__ = original.__qualname__
@@ -49,33 +40,14 @@ class Rewrite:
         )
         return rebuilt
 
-    @staticmethod
-    def _expectation(where: str) -> str:
-        """Register an intrinsic that checks the element type of one array, returning its name.
-
-        The intrinsic compiles to nothing when the array holds the scalar type its second
-        argument names, and fails typing naming `where` otherwise.
-        """
-
-        @intrinsic
-        def expects(_context, array: types.Type, kind: types.NumberClass) -> tuple:
-            if getattr(array, "dtype", None) != kind.instance_type:
-                raise TypingError(
-                    f"{where} receives {array} where an Array of {kind.instance_type} is declared"
-                )
-
-            def lowering(context, _builder, _signature, _args):
-                return context.get_dummy_value()
-
-            return types.none(array, kind), lowering
-
-        name = f"check_{next(_EXPECTED)}"
-        setattr(_EXPECTATIONS, name, expects)
-        return name
-
     def _code(self) -> CodeType:
         """The code object of the rewritten definition, compiled where the original was."""
-        definition = self._rewritten()
+        definition = _Conversions(self.function).visit(self.function.definition)
+        definition.decorator_list = []
+        definition.type_params = []
+        definition.returns = None
+        for argument in definition.args.args:
+            argument.annotation = None
         ast.fix_missing_locations(self.function.tree)
         module = compile(self.function.tree, self.function.function.__code__.co_filename, "exec")
         return next(
@@ -83,87 +55,6 @@ class Rewrite:
             for constant in module.co_consts
             if getattr(constant, "co_name", None) == definition.name
         )
-
-    def _entry(self) -> list[ast.stmt]:
-        """Return a check of every array's element type, then a conversion of every scalar.
-
-        Tuple parameters convert element by element.
-        """
-        statements: list[ast.stmt] = []
-        for argument in self.function.definition.args.args:
-            declared = self.function.parameters[argument.arg]
-            if not self.function.kernel and numba_type(declared) is not None:
-                continue
-            name = ast.Name(id=argument.arg, ctx=ast.Load())
-            checks: list[ast.stmt] = []
-            value = self._received(declared, name, checks)
-            if value is not name:
-                checks.append(
-                    ast.Assign(targets=[ast.Name(id=argument.arg, ctx=ast.Store())], value=value)
-                )
-            statements.extend(ast.copy_location(statement, argument) for statement in checks)
-        return statements
-
-    def _expected(self, declared: ArrayOf, value: ast.expr) -> list[ast.stmt]:
-        """The check that array `value` holds the element `declared` names, when it names one."""
-        if declared.element is None:
-            return []
-        where = f"{self.function.function.__qualname__}'s `{ast.unparse(value)}`"
-        expects = ast.Attribute(
-            value=ast.Name(id="_patos_expectations", ctx=ast.Load()),
-            attr=self._expectation(where),
-            ctx=ast.Load(),
-        )
-        return [ast.Expr(value=ast.Call(func=expects, args=[value, _numpy(declared.element)]))]
-
-    def _received(self, declared: Declared, value: ast.expr, checks: list[ast.stmt]) -> ast.expr:
-        """`value` converted to what `declared` names, appending a check of each array in it.
-
-        A record arrives with its scalars already converted where the host built it, so only its
-        arrays are checked, field by field, and the record passes on unchanged.
-        """
-        if isinstance(declared, Record):
-            for name, kind in declared.fields:
-                field = ast.Attribute(value=value, attr=name, ctx=ast.Load())
-                self._received(kind if not is_scalar(kind) else None, field, checks)
-            return value
-        if is_scalar(declared):
-            return _converted(declared, value)
-        if isinstance(declared, ArrayOf):
-            checks.extend(self._expected(declared, value))
-            return value
-        if isinstance(declared, tuple):
-            return self._unpacked(declared, value, checks)
-        return value
-
-    def _rewritten(self) -> ast.FunctionDef:
-        """The definition with its annotations converting, and then dropped."""
-        definition = _Conversions(self.function).visit(self.function.definition)
-        docstring = definition.body[:1] if ast.get_docstring(definition) is not None else []
-        definition.body = [*docstring, *self._entry(), *definition.body[len(docstring) :]] or [
-            ast.Pass()
-        ]
-        definition.decorator_list = []
-        definition.type_params = []
-        definition.returns = None
-        for argument in definition.args.args:
-            argument.annotation = None
-        return definition
-
-    def _unpacked(
-        self, declared: tuple[Declared, ...], value: ast.expr, checks: list[ast.stmt]
-    ) -> ast.expr:
-        """Tuple `value` received element by element, rebuilt only where an element converts."""
-        parts = [
-            ast.Subscript(value=value, slice=ast.Constant(value=index), ctx=ast.Load())
-            for index in range(len(declared))
-        ]
-        received = [
-            self._received(kind, part, checks) for kind, part in zip(declared, parts, strict=True)
-        ]
-        if any(element is not part for element, part in zip(received, parts, strict=True)):
-            return ast.Tuple(elts=received, ctx=ast.Load())
-        return value
 
 
 class _Conversions(ast.NodeTransformer):

@@ -10,7 +10,6 @@ import numpy as np
 
 from .arithmetic import combined, operated
 from .declarations import (
-    ArrayOf,
     Declared,
     Evaluated,
     Kind,
@@ -20,7 +19,7 @@ from .declarations import (
     is_scalar,
 )
 from .reading import Function, resolved
-from .scalars import i64, u64
+from .scalars import ArrayOf
 
 # One way a local gets its value: a reading of what is assigned, given the other locals.
 type _Origin = Callable[[dict[str, Declared]], Declared]
@@ -65,7 +64,7 @@ class Inference:
                 index, ast.Slice
             ):
                 array = record.field(field)
-                return array.element if isinstance(array, ArrayOf) else None
+                return array.element if isinstance(array, ArrayOf) and array.concrete else None
             case ast.Name() | ast.Attribute():
                 return self._constant(resolved(node, self.function.namespace))
             case ast.Subscript(
@@ -76,7 +75,7 @@ class Inference:
                 index, ast.Slice
             ):
                 array = self.function.parameters.get(name)
-                return array.element if isinstance(array, ArrayOf) else None
+                return array.element if isinstance(array, ArrayOf) and array.concrete else None
             case ast.Call(func=ast.Name(id="min" | "max"), args=[left, right]):
                 return combined(self.kind(left, kinds), self.kind(right, kinds))
             case ast.Call():
@@ -128,7 +127,7 @@ class Inference:
         if isinstance(value, bool):
             return bool
         if isinstance(value, int):
-            return u64 if value > np.iinfo(i64).max else i64
+            return np.uint64 if value > np.iinfo(np.int64).max else np.int64
         kind = type(value)
         return kind if is_scalar(kind) else None
 

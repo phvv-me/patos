@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ..typed import Array, device, i64, u64
+from ..typed import device, i64, u64
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 # The key of an empty slot: all ones, which a table must never store as a real key.
@@ -91,19 +91,19 @@ def build_filter(values: Iterable[int]) -> np.ndarray:
 
 
 @device
-def bitmap_holds(words: Array[u64], bit: u64) -> bool:
+def bitmap_holds(words: u64[int], bit: u64) -> bool:
     """Whether bit `bit` of the bitmap packed into 64-bit `words` is set."""
     return (words[bit >> 6] >> (bit & 63)) & 1 != 0
 
 
 @device
-def filter_holds(words: Array[u64], value: u64) -> bool:
+def filter_holds(words: u64[int], value: u64) -> bool:
     """Whether the filter may hold `value`, which is certain only when this is false."""
     return bitmap_holds(words, device_splitmix(value) & (_FILTER_BITS - 1))
 
 
 @device
-def probe(slots: Array[u64], mask: u64, key: u64) -> i64:
+def probe(slots: u64[int], mask: u64, key: u64) -> i64:
     """The payload `key` maps to in a table `build_pair_slots` built, or -1 when it holds none.
 
     mask: the table's capacity less one.
