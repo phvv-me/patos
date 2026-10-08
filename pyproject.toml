@@ -30,6 +30,15 @@ classifiers = [
 dependencies = ["pydantic>=2.13.4,<3"]
 
 [project.optional-dependencies]
+# `patos.cuda` writes device code on numba-cuda, launches it through cuda.core, scans through
+# cuda.compute and takes CuPy as the array module, at the floors cutok was proven on.
+cuda = [
+  "cuda-cccl[cu13]>=1.2.1,<2",
+  "cuda-core>=1.1.1,<2",
+  "cupy-cuda13x>=14.1.1,<15",
+  "numba-cuda>=0.30.4,<0.31",
+  "numpy>=2",
+]
 # `patos.torch` is the one namespace that touches an accelerator stack, so it stays behind an
 # extra the way `sql` does. The torch floor is deliberately loose, since nothing here reaches
 # past `manual_seed`, `finfo`, `eye` and the matmul precision switches, and a consumer already
@@ -90,9 +99,23 @@ exclude = ["*.md"]
 [tool.pyrefly]
 project-includes = ["src", "tests", "typing"]
 search-path = ["src", "tests", "typing", "."]
-# The `torch` extra is not installed in the gate, so its two imports are absent there rather
-# than wrong. Naming exactly those two keeps every other unresolved import an error.
-ignore-missing-imports = ["numpy", "torch"]
+# The `torch` and `cuda` extras are not installed in the gate, so their imports are absent there
+# rather than wrong. Naming exactly those keeps every other unresolved import an error.
+ignore-missing-imports = ["numpy", "torch", "numba", "numba.*", "llvmlite", "llvmlite.*", "cuda.*", "cupy", "cupy.*"]
+# numba and llvmlite carry no types a device function can be checked against: an intrinsic takes
+# no context, a dispatcher has no signature and the fixed-width scalars no arithmetic. With cupy
+# and cuda-python they read as untyped whether the extra is installed or not, so the verdict is
+# the same on every host and rests on the host code that calls them.
+replace-imports-with-any = ["numba", "numba.*", "llvmlite", "llvmlite.*", "cupy", "cupy.*", "cuda.*"]
+
+# A `Struct` subclass becomes a named tuple of fields read at class creation, which pyrefly takes for
+# a malformed functional `namedtuple` definition, since it expects the field names spelled out.
+[[tool.pyrefly.sub-config]]
+matches = "src/patos/cuda/typed/struct.py"
+
+[tool.pyrefly.sub-config.errors]
+bad-class-definition = false
+invalid-argument = false
 
 [tool.ty.environment]
 python-version = "3.14"
@@ -101,12 +124,179 @@ root = ["src", "typing"]
 [tool.ty.src]
 include = ["src", "typing"]
 
+# The same untyped reading of the CUDA stack as pyrefly's `replace-imports-with-any` above.
+[tool.ty.analysis]
+replace-imports-with-any = ["numba", "numba.*", "llvmlite", "llvmlite.*", "cupy", "cupy.*", "cuda.*"]
+
 # Same optional-extra gap as the pyrefly setting above, scoped to the only files that import it.
 [[tool.ty.overrides]]
-include = ["src/patos/torch/**"]
+include = ["src/patos/torch/**", "src/patos/cuda/**"]
 
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
+
+# An intrinsic's stub declares only a signature; `ptx` or `nvvm` supplies its body.
+[[tool.ty.overrides]]
+include = ["src/patos/cuda/primitives/warp.py"]
+
+[tool.ty.overrides.rules]
+empty-body = "ignore"
+
+# mcmr reads a Numba CUDA function only through a literal `cuda.jit` decorator, so `device` and
+# `kernel`, which wrap it, earn none of its device-code exemptions. Each entry names its reason.
+
+# patos.cuda is a library whose callers (cutoken) live outside this checkout, so a protocol or a
+# public function with no reference here is reached from there.
+[tool.mcmr.rules."ALL-ARCH0005"]
+exclude = ["src/patos/cuda/runtime/streams.py"]
+
+# `device` and `ptx` hand back numba's dispatcher or intrinsic typed as the function it
+# compiles, so device code calling it is checked against the callee's own signature; the cast states
+# that on purpose.
+[tool.mcmr.rules."PY-TYPE0009"]
+exclude = ["src/patos/cuda/typed/decorators.py", "src/patos/cuda/typed/intrinsics.py"]
+
+# The package surfaces callers outside this checkout (cutoken) import from.
+[tool.mcmr.rules."PY-MODU0005"]
+exclude = [
+  "src/patos/cuda/primitives/__init__.py",
+  "src/patos/cuda/runtime/__init__.py",
+  "src/patos/cuda/typed/__init__.py",
+]
+
+# Published functions of the same library, called from cutoken.
+[tool.mcmr.rules."ALL-REAC0001"]
+exclude = [
+  "src/patos/cuda/runtime/memory.py",
+  "src/patos/cuda/primitives/hash.py",
+  "src/patos/cuda/runtime/launch.py",
+  "src/patos/cuda/runtime/streams.py",
+]
+
+# `pair_key`, `splitmix` and `table_capacity` are defined here and called from cutoken.
+[tool.mcmr.rules."ALL-REAC0002"]
+exclude = ["src/patos/cuda/primitives/hash.py"]
+
+# Kernels read a module global as a compile-time constant, so `EMPTY_KEY` stays public in the
+# module that owns it and cutoken's kernels import it by name.
+[tool.mcmr.rules."PY-CONS0001"]
+exclude = ["src/patos/cuda/primitives/hash.py"]
+
+# The package surface passes `EMPTY_KEY` on for the same reason.
+[tool.mcmr.rules."PY-CONS0002"]
+exclude = ["src/patos/cuda/primitives/__init__.py"]
+
+# numba-cuda 0.30 keeps no public handle to a compiled kernel or its argument marshalling, which
+# the cached launcher is made of; the launcher tests pin its cache keys and its registry. A named
+# tuple's own API is underscored (`_replace`, `_fields`), which the `Struct` tests call.
+[tool.mcmr.rules."ALL-ENCA0001"]
+exclude = ["src/patos/cuda/runtime/launch.py", "tests/test_cuda_runtime.py", "tests/test_cuda_types.py"]
+
+# numba-cuda keeps `map_layout` four modules deep, and the launcher tests stand a fake module in
+# at exactly that path. The tests reach the typing rules and the scratch memory in the modules that
+# define them, since a package re-export would import the CUDA stack before the fakes stand in.
+[tool.mcmr.rules."PY-IMPO0005"]
+exclude = ["src/patos/cuda/runtime/launch.py", "tests/test_cuda_runtime.py", "tests/test_cuda_types.py"]
+
+# `Specialization._viewed` falls back on the interface version inside its `except`, and moving a
+# statement out would change the protected transaction; `fake_runtime` has to drop every module it
+# imported meanwhile in a `finally`.
+[tool.mcmr.rules."PY-EXCE0002"]
+exclude = ["src/patos/cuda/runtime/launch.py", "tests/test_cuda_runtime.py"]
+
+# A launch signature is a dict key, a declared tuple type is a tuple reading that `isinstance`
+# tells from every other, and `_Signature` is frozen: these tuples are the domain, not a choice
+# of collection.
+[tool.mcmr.rules."PY-COLL0004"]
+exclude = [
+  "src/patos/cuda/runtime/launch.py",
+  "src/patos/cuda/typed/declarations.py",
+  "src/patos/cuda/typed/decorators.py",
+  "src/patos/cuda/typed/intrinsics.py",
+  "src/patos/cuda/typed/reading.py",
+  "src/patos/cuda/typed/rewrite.py",
+]
+
+# The launcher keys on tuple arguments and the type reader meets AST constants as `bool` and `int`:
+# both are representation boundaries.
+[tool.mcmr.rules."PY-INTE0001"]
+exclude = [
+  "src/patos/cuda/runtime/launch.py",
+  "src/patos/cuda/typed/declarations.py",
+  "src/patos/cuda/typed/reading.py",
+  "src/patos/cuda/typed/rewrite.py",
+]
+
+# A reading is built, hashed and compared per expression while a decorator runs, and the tests
+# build `_Literal(1)` positionally, so pydantic validation and keyword-only fields buy nothing.
+[tool.mcmr.rules."PY-MODE0005"]
+exclude = ["src/patos/cuda/typed/declarations.py"]
+
+# `left` and `right` are the operands of a binary operator, and `operand`, `other`, `target` and
+# `value` the AST nodes of an operation or a store; warp.py holds device functions that cutoken's
+# kernels call positionally.
+[tool.mcmr.rules."ALL-PARA0001"]
+exclude = [
+  "src/patos/cuda/typed/arithmetic.py",
+  "src/patos/cuda/typed/checks.py",
+  "src/patos/cuda/typed/rewrite.py",
+  "src/patos/cuda/primitives/warp.py",
+]
+
+# `ballot_prefix(flag)` is a device function that cutoken's kernels call positionally.
+[tool.mcmr.rules."ALL-PARA0003"]
+exclude = ["src/patos/cuda/primitives/warp.py"]
+
+# The test modules keep their fakes and helpers beside the scenarios that use them.
+[tool.mcmr.rules."ALL-MODU0001"]
+exclude = ["tests/test_cuda_runtime.py", "tests/test_cuda_types.py"]
+
+# The same closed families: each module keeps its record or protocol beside the one class using it,
+# the declaration forms sit together, an error beside the reading that raises it, the AST pass
+# beside the rewrite driving it, and the record metaclass beside its one base.
+[tool.mcmr.rules."ALL-MODU0005"]
+exclude = [
+  "src/patos/cuda/runtime/launch.py",
+  "src/patos/cuda/runtime/memory.py",
+  "src/patos/cuda/runtime/streams.py",
+  "src/patos/cuda/typed/declarations.py",
+  "src/patos/cuda/typed/reading.py",
+  "src/patos/cuda/typed/rewrite.py",
+  "src/patos/cuda/typed/struct.py",
+  "tests/test_cuda_runtime.py",
+  "tests/test_cuda_types.py",
+]
+
+# The same, counted in statements.
+[tool.mcmr.rules."ALL-MODU0006"]
+exclude = ["tests/test_cuda_runtime.py", "tests/test_cuda_types.py"]
+
+# The house testing policy is maximum coverage from minimum test count: a test is one dense
+# scenario, and its helpers and fakes share the module. Splitting to the ceilings would multiply
+# the tests.
+[tool.mcmr.rules."ALL-TEST0003"]
+exclude = ["tests/test_cuda_runtime.py", "tests/test_cuda_types.py"]
+
+# The same policy: a runtime test is the whole story of one launcher behavior.
+[tool.mcmr.rules."ALL-FUNC0001"]
+exclude = ["tests/test_cuda_runtime.py"]
+
+[tool.mcmr.rules."PY-TEST0012"]
+exclude = ["tests/test_cuda_runtime.py"]
+
+# `defined` compiles a template into a namespace, the only way to hand `inspect.getsource` a
+# function that carries the annotations under test.
+[tool.mcmr.rules."ALL-FUNC0011"]
+exclude = ["tests/test_cuda_types.py"]
+
+# `met` is the rules read over Numba's types, which the tests pin against `meet`, so it stays a
+# module function they import rather than moving into the typing rule that calls it.
+[tool.mcmr.rules."ALL-FUNC0003"]
+ignore_names = ["met"]
+
+# The initializer of a namespace package holds its docstring and nothing else.
+[tool.mcmr.rules."PY-MODU0002"]
+exclude = ["src/patos/cuda/__init__.py"]
 
 [tool.pytest.ini_options]
 addopts = "-q -ra --strict-markers"
