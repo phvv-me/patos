@@ -2,11 +2,12 @@
 
 import annotationlib
 import collections
+from functools import cache
 from typing import TYPE_CHECKING, Self
 
 import numpy as np
 
-from .declarations import ArrayOf, Evaluated, declared, is_scalar, named
+from .declarations import ArrayOf, Declared, Evaluated, declared, is_scalar, named
 
 if TYPE_CHECKING:
     from .scalars import Shaped
@@ -67,19 +68,25 @@ class Struct(tuple, metaclass=_StructMeta):
     @classmethod
     def _received(cls, field: str, value: Field) -> Field:
         """`value` as field `field` declares it: a scalar converted, an array's dtype checked."""
-        kind = declared(cls._declarations[field])
+        kind = cls._declared(field)
         if kind is bool:
             return bool(value)
         if is_scalar(kind):
-            return np.asarray(value, dtype=kind)[()]
+            return value if type(value) is kind else np.asarray(value, dtype=kind)[()]
         if isinstance(kind, ArrayOf) and kind.element is not None:
-            dtype = np.dtype(getattr(value, "dtype", None))
-            if dtype != np.dtype(kind.element):
+            dtype = getattr(value, "dtype", None)
+            if dtype != kind.element:
                 expected = named(kind.element)
                 raise TypeError(
                     f"{cls.__name__}.{field} holds {dtype}, not the {expected} declared"
                 )
         return value
+
+    @classmethod
+    @cache
+    def _declared(cls, field: str) -> Declared:
+        """What field `field` declares, read once per record type, on its first construction."""
+        return declared(cls._declarations[field])
 
     def _replace(self, **changes: Field) -> Self:
         """A copy with `changes` applied, checked as a new record is."""

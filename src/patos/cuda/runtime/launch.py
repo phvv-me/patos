@@ -16,7 +16,9 @@ from numba.cuda.np.numpy_support import map_layout
 
 type Kind = tuple[type, str, int, str] | tuple[type, tuple[Kind, ...]] | type
 type Identity = (
-    tuple[int, tuple[int, ...], tuple[int, ...]] | tuple[type, Hashable] | tuple[Identity, ...]
+    tuple[type, str, int, tuple[int, ...], tuple[int, ...]]
+    | tuple[type, Hashable]
+    | tuple[type, tuple[Identity, ...]]
 )
 
 
@@ -37,32 +39,17 @@ class Specialization:
         self.core_kernel = kernel._codelibrary.get_cufunc().kernel
         self.prepared: list[tuple[Identity, list] | None] = [None] * count
 
-    def arguments(self, stream, arguments: tuple) -> list:
+    def arguments(self, stream, arguments: tuple, identities: Sequence[Identity]) -> list:
         """Marshal the arguments, rebuilding only the descriptors that no longer match."""
         kernelargs: list = []
-        for index, (kind, value) in enumerate(
-            zip(self.kernel.argument_types, arguments, strict=True)
+        for index, (kind, value, identity) in enumerate(
+            zip(self.kernel.argument_types, arguments, identities, strict=True)
         ):
-            identity = self._identity(value)
             slot = self.prepared[index]
             if slot is None or slot[0] != identity:
                 slot = self.prepared[index] = (identity, self._marshalled(kind, value, stream))
             kernelargs.extend(slot[1])
         return kernelargs
-
-    @staticmethod
-    def _identity(value) -> Identity:
-        """What decides whether a marshalled argument still describes `value`.
-
-        A device array is its pointer, shape and strides, a scalar its own value, a tuple the
-        identities of its elements.
-        """
-        if isinstance(value, Sequence):
-            return tuple(Specialization._identity(item) for item in value)
-        data = getattr(value, "data", None)
-        if data is not None and hasattr(data, "ptr"):
-            return (data.ptr, value.shape, value.strides)
-        return (type(value), value)
 
     def _marshalled(self, kind, value, stream) -> list:
         """The kernel-argument descriptors Numba builds for one argument."""
@@ -94,8 +81,9 @@ class Specialization:
 class CachedCudaLauncher:
     """Launch one Numba kernel through cuda.core with cached argument descriptors.
 
-    Numba compiles each signature; all launches marshal only arguments that changed.
-    The current CuPy stream declares the producer, including on descriptor-cache hits.
+    Numba compiles each signature; all launches marshal only arguments that changed, and a
+    launch whose every argument is the one the last launch passed reuses its whole argument
+    list. The current CuPy stream declares the producer, including on descriptor-cache hits.
     """
 
     def __init__(self, dispatcher) -> None:
@@ -103,6 +91,7 @@ class CachedCudaLauncher:
         self.specializations: dict[tuple[Kind, ...], Specialization] = {}
         self.configs: dict[Grid, LaunchConfig] = {}
         self.streams: dict[int, Stream] = {}
+        self.recent: tuple[tuple[Identity, ...], Specialization, list] | None = None
 
     @property
     def compiled(self) -> bool:
@@ -115,14 +104,13 @@ class CachedCudaLauncher:
         stream: any stream speaking the CUDA stream protocol, CuPy's, numba's or cuda.core's.
         """
         consumer = self._core_stream(stream)
-        signature = tuple(self._kind(value) for value in arguments)
-        specialization = self.specializations.get(signature)
-        if specialization is None:
-            specialized = self.dispatcher.specialize(*arguments)
-            kernel = next(iter(specialized.overloads.values()))
-            specialization = self.specializations[signature] = Specialization(
-                kernel, len(arguments)
-            )
+        identities = tuple(_identity(value) for value in arguments)
+        if self.recent is not None and self.recent[0] == identities:
+            _, specialization, kernelargs = self.recent
+        else:
+            specialization = self._specialization(arguments)
+            kernelargs = specialization.arguments(consumer, arguments, identities)
+            self.recent = (identities, specialization, kernelargs)
         config = self.configs.get(grid)
         if config is None:
             config = LaunchConfig(grid=grid.blocks, block=grid.threads)
@@ -130,25 +118,19 @@ class CachedCudaLauncher:
         producer = get_current_stream()
         if (int(consumer.handle) or 1) != (producer.ptr or 1):
             consumer.wait(producer)
-        launch(
-            consumer,
-            config,
-            specialization.core_kernel,
-            *specialization.arguments(consumer, arguments),
-        )
+        launch(consumer, config, specialization.core_kernel, *kernelargs)
 
-    @classmethod
-    def _kind(cls, value) -> Kind:
-        """What decides which compiled specialization an argument belongs to.
-
-        Array layout selects different compiled indexing; scalars also keep their type.
-        """
-        if isinstance(value, tuple):
-            return (type(value), tuple(cls._kind(item) for item in value))
-        dtype = getattr(value, "dtype", None)
-        if dtype is not None:
-            return (type(value), dtype.str, value.ndim, map_layout(value))
-        return type(value)
+    def _specialization(self, arguments: tuple) -> Specialization:
+        """The compiled kernel these arguments select, specialized on first use."""
+        signature = tuple(_kind(value) for value in arguments)
+        specialization = self.specializations.get(signature)
+        if specialization is None:
+            specialized = self.dispatcher.specialize(*arguments)
+            kernel = next(iter(specialized.overloads.values()))
+            specialization = self.specializations[signature] = Specialization(
+                kernel, len(arguments)
+            )
+        return specialization
 
     def _core_stream(self, stream) -> Stream:
         """Borrow `stream` as a cuda.core stream, wrapped once per handle.
@@ -163,6 +145,34 @@ class CachedCudaLauncher:
         if core_stream is None:
             core_stream = self.streams[handle] = Stream.from_handle(handle)
         return core_stream
+
+
+def _identity(value) -> Identity:
+    """What decides whether a marshalled argument still describes `value`, and which compiled
+    kernel it selects.
+
+    A device array is its type, dtype, pointer, shape and strides, a scalar its type and value,
+    a record its type and its fields' identities. Equal identities select one specialization.
+    """
+    if isinstance(value, tuple):
+        return (type(value), tuple(_identity(item) for item in value))
+    data = getattr(value, "data", None)
+    if data is not None and hasattr(data, "ptr"):
+        return (type(value), value.dtype.str, data.ptr, value.shape, value.strides)
+    return (type(value), value)
+
+
+def _kind(value) -> Kind:
+    """What selects the specialization an argument compiles to.
+
+    Array layout selects different compiled indexing; scalars also keep their type.
+    """
+    if isinstance(value, tuple):
+        return (type(value), tuple(_kind(item) for item in value))
+    dtype = getattr(value, "dtype", None)
+    if dtype is not None:
+        return (type(value), dtype.str, value.ndim, map_layout(value))
+    return type(value)
 
 
 _launchers: dict[Hashable, CachedCudaLauncher] = {}

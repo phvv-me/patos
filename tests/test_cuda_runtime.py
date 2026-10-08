@@ -8,7 +8,7 @@ needs a real CUDA stack and skips without one.
 
 import importlib
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Hashable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from itertools import combinations
 from types import ModuleType, SimpleNamespace
@@ -282,6 +282,10 @@ def test_settle_uploads_synchronizes_the_current_stream_and_skips_modules_withou
     assert stream.synchronized == 1
 
 
+# What a launch argument can be: an array of either module, a record of them, or a scalar.
+type Argument = np.ndarray | FakeDeviceArray | tuple | int | float
+
+
 def test_kind_separates_exactly_what_numba_compiles_differently() -> None:
     """Dtype, rank and layout pick a specialization; values do not, and tuples nest."""
     specs = st.tuples(
@@ -298,7 +302,9 @@ def test_kind_separates_exactly_what_numba_compiles_differently() -> None:
         return (np.dtype(dtype).str, rank, order if rank == 2 else "C")
 
     with fake_runtime() as state:
-        kind = state.launch.CachedCudaLauncher._kind
+
+        def kind(value: Argument) -> Hashable:
+            return state.launch._kind(value)
 
         @given(left=specs, right=specs)
         def check(left: Sequence, right: Sequence) -> None:
@@ -311,10 +317,14 @@ def test_kind_separates_exactly_what_numba_compiles_differently() -> None:
         assert kind(2.5) is float
 
 
-def test_identity_is_the_pointer_shape_and_strides_of_arrays_and_the_value_of_scalars() -> None:
+def test_identity_is_the_dtype_pointer_shape_and_strides_of_arrays_and_the_value_of_scalars() -> (
+    None
+):
     """A marshalled descriptor stays valid exactly while its argument's identity does."""
     with fake_runtime() as state:
-        identity = state.launch.Specialization._identity
+
+        def identity(value: Argument) -> Hashable:
+            return state.launch._identity(value)
 
         @given(
             pointer=st.integers(0, 2**40),
@@ -324,15 +334,22 @@ def test_identity_is_the_pointer_shape_and_strides_of_arrays_and_the_value_of_sc
         def check(pointer: int, shape: Sequence[int], scalar: int) -> None:
             strides = (shape[1] * 4, 4)
             array = FakeDeviceArray(pointer, shape, strides=strides)
-            assert identity(array) == (pointer, shape, strides)
+            assert identity(array) == (FakeDeviceArray, "<i4", pointer, shape, strides)
             assert identity(FakeDeviceArray(pointer + 1, shape, strides=strides)) != identity(
                 array
             )
             assert identity(scalar) == (int, scalar)
             assert identity(float(scalar)) != identity(scalar)
-            assert identity((array, scalar)) == (identity(array), identity(scalar))
+            assert identity((array, scalar)) == (tuple, (identity(array), identity(scalar)))
 
         check()
+
+
+def marshalled(launch: ModuleType, specialization, stream: FakeStream, arguments: tuple) -> list:
+    """The descriptors a launch hands the kernel, with the identities the launcher reads."""
+    return specialization.arguments(
+        stream, arguments, [launch._identity(value) for value in arguments]
+    )
 
 
 def test_arguments_marshal_only_what_changed(runtime: SimpleNamespace) -> None:
@@ -342,15 +359,15 @@ def test_arguments_marshal_only_what_changed(runtime: SimpleNamespace) -> None:
     stream = FakeStream(5)
     array = FakeDeviceArray(100)
 
-    first = specialization.arguments(stream, (array, 3))
+    first = marshalled(runtime.launch, specialization, stream, (array, 3))
     assert specialization.core_kernel is kernel.core
     assert first == [(_DESCRIPTOR, "array", array), (_DESCRIPTOR, "scalar", 3)]
-    assert specialization.arguments(stream, (array, 3)) == first
+    assert marshalled(runtime.launch, specialization, stream, (array, 3)) == first
     assert len(kernel.prepared) == 2
 
-    specialization.arguments(stream, (array, 4))
+    marshalled(runtime.launch, specialization, stream, (array, 4))
     assert kernel.prepared[2:] == [("scalar", 4)]
-    specialization.arguments(stream, (FakeDeviceArray(200), 4))
+    marshalled(runtime.launch, specialization, stream, (FakeDeviceArray(200), 4))
     assert [kind for kind, _ in kernel.prepared[3:]] == ["array"]
 
 
@@ -387,9 +404,9 @@ def test_negative_strides_are_viewed_around_cupy_dlpack_export(
 
     if route == "raises":
         with pytest.raises(BufferError):
-            specialization.arguments(FakeStream(5), (array,))
+            marshalled(runtime.launch, specialization, FakeStream(5), (array,))
         return
-    specialization.arguments(FakeStream(5), (array,))
+    marshalled(runtime.launch, specialization, FakeStream(5), (array,))
 
     assert kernel.prepared == [("array", ("view", array, 5) if route == "view" else array)]
 
