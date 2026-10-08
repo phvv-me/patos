@@ -98,9 +98,8 @@ class CachedCudaLauncher:
     The current CuPy stream declares the producer, including on descriptor-cache hits.
     """
 
-    def __init__(self, dispatcher, *, enabled: bool = True) -> None:
+    def __init__(self, dispatcher) -> None:
         self.dispatcher = dispatcher
-        self.enabled = enabled
         self.specializations: dict[tuple[Kind, ...], Specialization] = {}
         self.configs: dict[Grid, LaunchConfig] = {}
         self.streams: dict[int, Stream] = {}
@@ -110,20 +109,12 @@ class CachedCudaLauncher:
         """Whether this launcher has already specialized a call in this process."""
         return bool(self.specializations)
 
-    @classmethod
-    def each(cls, kernels, *, enabled: bool) -> tuple[CachedCudaLauncher, ...]:
-        """One launcher per kernel, in the order given."""
-        return tuple(cls(kernel, enabled=enabled) for kernel in kernels)
-
     def launch(self, grid: Grid, stream, *arguments) -> None:
         """Launch with the cached kernel and descriptors of this argument signature.
 
         stream: any stream speaking the CUDA stream protocol, CuPy's, numba's or cuda.core's.
         """
         consumer = self._core_stream(stream)
-        if not self.enabled:
-            self.dispatcher[grid.blocks, grid.threads, consumer](*arguments)
-            return
         signature = tuple(self._kind(value) for value in arguments)
         specialization = self.specializations.get(signature)
         if specialization is None:
@@ -177,13 +168,15 @@ class CachedCudaLauncher:
 _launchers: dict[Hashable, CachedCudaLauncher] = {}
 
 
-def launch_kernel(kernel, grid: Grid, stream, *arguments) -> None:
-    """Launch `kernel` through the one cached launcher every call site shares for it.
+def launcher(kernel) -> CachedCudaLauncher:
+    """The one cached launcher every call site shares for `kernel`, keyed on the dispatcher."""
+    try:
+        return _launchers[kernel]
+    except KeyError:
+        held = _launchers[kernel] = CachedCudaLauncher(kernel)
+        return held
 
-    The launcher is keyed on the dispatcher object itself.
-    """
-    launcher = _launchers.get(kernel)
-    if launcher is None:
-        launcher = CachedCudaLauncher(kernel)
-        _launchers[kernel] = launcher
-    launcher.launch(grid, stream, *arguments)
+
+def launch_kernel(kernel, grid: Grid, stream, *arguments) -> None:
+    """Launch `kernel` through its shared launcher."""
+    launcher(kernel).launch(grid, stream, *arguments)

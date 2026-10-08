@@ -83,15 +83,11 @@ class FakeKernel:
 
 
 class FakeDispatcher:
-    """A Numba dispatcher that specializes to one kernel and records direct launches."""
+    """A Numba dispatcher that specializes to one kernel."""
 
     def __init__(self, kernel: FakeKernel) -> None:
         self.kernel = kernel
         self.specialized: list[Sequence] = []
-        self.direct: list[Sequence] = []
-
-    def __getitem__(self, configuration: Sequence):
-        return lambda *arguments: self.direct.append((configuration, arguments))
 
     def specialize(self, *arguments) -> SimpleNamespace:
         self.specialized.append(arguments)
@@ -447,21 +443,14 @@ def test_launcher_waits_on_the_producer_and_specializes_again_for_a_new_signatur
     assert (runtime.launches[-1][0], launcher.streams) == (own, {9: consumer})
 
 
-def test_launcher_runs_the_dispatcher_directly_when_disabled_and_launch_kernel_shares_one(
-    runtime: SimpleNamespace,
-) -> None:
-    """`enabled=False` bypasses the cache; `launch_kernel` keeps one launcher per dispatcher."""
+def test_launch_kernel_shares_one_launcher_per_dispatcher(runtime: SimpleNamespace) -> None:
     kernels = [FakeDispatcher(FakeKernel("scalar")) for _ in range(2)]
     grid = runtime.launch.Grid(2, 64)
     stream = SimpleNamespace(__cuda_stream__=lambda: (0, 9))
 
-    plain = runtime.launch.CachedCudaLauncher.each(kernels, enabled=False)
-    plain[1].launch(grid, stream, 5)
-    assert [launcher.dispatcher for launcher in plain] == kernels
-    assert kernels[1].direct == [((2, 64, plain[1].streams[9]), (5,))]
-    assert (runtime.launches, kernels[1].specialized) == ([], [])
-
+    assert not runtime.launch.launcher(kernels[0]).compiled
     runtime.launch.launch_kernel(kernels[0], grid, stream, 5)
     runtime.launch.launch_kernel(kernels[0], grid, stream, 6)
     assert list(runtime.launch._launchers) == [kernels[0]]
+    assert runtime.launch.launcher(kernels[0]).compiled
     assert (len(kernels[0].specialized), len(runtime.launches)) == (1, 2)

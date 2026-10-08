@@ -9,7 +9,11 @@ import numpy as np
 from .declarations import ArrayOf, Evaluated, declared, is_scalar, named
 
 if TYPE_CHECKING:
-    from numpy.typing import ArrayLike
+    from .scalars import Shaped
+
+# What a record holds: a scalar, an array of any module, or a tuple of either, such as the index
+# and the body of a paged table.
+type Field = bool | int | float | np.generic | Shaped | tuple[Field, ...]
 
 
 class _StructMeta(type):
@@ -28,7 +32,7 @@ class _StructMeta(type):
             key: value for key, value in namespace.items() if key not in {*fields, "__dict__"}
         }
 
-        def __new__(cls: type[Struct], *arguments: ArrayLike, **keywords: ArrayLike) -> Struct:
+        def __new__(cls: type[Struct], *arguments: Field, **keywords: Field) -> Struct:
             values = record(*arguments, **keywords)
             return tuple.__new__(cls, map(cls._received, fields, values, strict=True))
 
@@ -54,14 +58,14 @@ class Struct(tuple, metaclass=_StructMeta):
 
     if TYPE_CHECKING:
 
-        def __new__(cls, *arguments: ArrayLike, **keywords: ArrayLike) -> Self: ...
+        def __new__(cls, *arguments: Field, **keywords: Field) -> Self: ...
 
         _fields: tuple[str, ...]
 
-        def _asdict(self) -> dict[str, ArrayLike]: ...
+        def _asdict(self) -> dict[str, Field]: ...
 
     @classmethod
-    def _received(cls, field: str, value: ArrayLike) -> ArrayLike:
+    def _received(cls, field: str, value: Field) -> Field:
         """`value` as field `field` declares it: a scalar converted, an array's dtype checked."""
         kind = declared(cls._declarations[field])
         if kind is bool:
@@ -77,6 +81,6 @@ class Struct(tuple, metaclass=_StructMeta):
                 )
         return value
 
-    def _replace(self, **changes: ArrayLike) -> Self:
+    def _replace(self, **changes: Field) -> Self:
         """A copy with `changes` applied, checked as a new record is."""
         return type(self)(**{**self._asdict(), **changes})
