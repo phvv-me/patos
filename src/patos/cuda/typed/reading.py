@@ -30,7 +30,7 @@ class AnnotationError(TypeError):
     whose casts repeat them."""
 
 
-class Function:
+class Reading:
     """One device function or kernel as written, with every issue its annotations raise.
 
     kernel: whether `function` is a kernel, which returns None.

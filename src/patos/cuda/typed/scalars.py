@@ -14,7 +14,7 @@ import numpy as np
 if TYPE_CHECKING:
     from numpy.typing import DTypeLike
 
-    from ..runtime.streams import DeviceStream
+    from ..runtime.streams import Stream
 
 
 class Shaped(Protocol):
@@ -164,7 +164,7 @@ if TYPE_CHECKING:
 
         def fill(self, value: int) -> None: ...
 
-        def get(self, *, stream: DeviceStream | None = None) -> np.ndarray: ...
+        def get(self, *, stream: Stream | None = None) -> np.ndarray: ...
 
     # What arithmetic meets a numeric value with, and what indexes an array.
     type Operand = int | np.integer | Shaped | Numeric

@@ -12,13 +12,13 @@ from .arithmetic import combined, operated
 from .declarations import (
     Declared,
     Evaluated,
-    Kind,
     IntLiteral,
+    Kind,
     Record,
     is_integer,
     is_scalar,
 )
-from .reading import Function, resolved
+from .reading import Reading, resolved
 from .scalars import ArrayOf
 
 # One way a local gets its value: a reading of what is assigned, given the other locals.
@@ -35,7 +35,7 @@ _FOLDED: dict[type[ast.operator], Callable[[int, int], int]] = {
 class Inference:
     """The type every local of one function takes, and the type of any of its expressions."""
 
-    def __init__(self, function: Function) -> None:
+    def __init__(self, function: Reading) -> None:
         self.function = function
         self.kinds = self._inferred()
 

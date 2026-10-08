@@ -23,7 +23,7 @@ from numba import types
 from numba.core.typing import templates
 from numba.cuda.cudadecl import registry
 
-from .declarations import Declared, Kind, IntLiteral, is_integer
+from .declarations import Declared, IntLiteral, Kind, is_integer
 
 _ARITHMETIC = (
     operator.add, operator.sub, operator.mul, operator.floordiv, operator.mod,

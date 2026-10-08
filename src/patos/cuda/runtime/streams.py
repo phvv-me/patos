@@ -7,8 +7,21 @@ if TYPE_CHECKING:
     from types import TracebackType
 
 
-class DeviceStream(Protocol):
-    """Stream operations the pipeline uses."""
+class Event(Protocol):
+    """One CUDA event, ordering work across streams."""
+
+    def record(self, stream: Stream | None = None) -> None:
+        """Record completion of work already queued on a stream."""
+        ...
+
+    def synchronize(self) -> None:
+        """Wait on the host until the recorded work finishes."""
+        ...
+
+
+class Stream(Protocol):
+    """A CUDA stream as the host runtime uses one: entered as the current stream, waited on, and
+    made to wait for another stream's event."""
 
     def __enter__(self) -> Self:
         """Enter this stream as the current stream."""
@@ -27,23 +40,7 @@ class DeviceStream(Protocol):
         """Wait for queued work to finish."""
         ...
 
-
-class PipelineEvent(Protocol):
-    """One CUDA event used to order ingestion work across streams."""
-
-    def record(self, stream: PipelineStream | None = None) -> None:
-        """Record completion of work already queued on a stream."""
-        ...
-
-    def synchronize(self) -> None:
-        """Wait on the host until the recorded work finishes."""
-        ...
-
-
-class PipelineStream(DeviceStream, Protocol):
-    """A CUDA stream that can wait for an event from another stream."""
-
-    def wait_event(self, _event: PipelineEvent) -> None:
+    def wait_event(self, _event: Event) -> None:
         """Queue a dependency on a previously recorded event."""
         ...
 

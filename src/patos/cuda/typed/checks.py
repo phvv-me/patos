@@ -9,30 +9,30 @@ from types import FunctionType, NoneType
 from .arithmetic import combined, operated
 from .declarations import Declared, Kind, Returns, is_scalar, named
 from .inference import Inference
-from .reading import Function
+from .reading import Reading
 from .scalars import ArrayOf
 
 
-def read(function: FunctionType, *, kernel: bool, owner: type | None = None) -> Function:
+def read(function: FunctionType, *, kernel: bool, owner: type | None = None) -> Reading:
     """`function` read and checked.
 
     owner: the record class `function` is a member of.
     Raises `AnnotationError` naming every line whose annotations are missing, contradict each
     other, or are repeated by a cast.
     """
-    read = Function(function, kernel=kernel, owner=owner)
-    Checks(read, Inference(read)).run()
+    read = Reading(function, kernel=kernel, owner=owner)
+    Checker(read, Inference(read)).check()
     return read
 
 
-class Checks:
+class Checker:
     """The checks one function passes, reported with the issues its reading raised."""
 
-    def __init__(self, function: Function, inference: Inference) -> None:
+    def __init__(self, function: Reading, inference: Inference) -> None:
         self.function = function
         self.inference = inference
 
-    def run(self) -> None:
+    def check(self) -> None:
         """Raise `AnnotationError` naming every line whose annotations fail.
 
         An annotation fails when it is missing, contradicts another, or a cast repeats it.

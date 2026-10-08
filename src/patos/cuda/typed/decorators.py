@@ -21,7 +21,7 @@ from numba.cuda.np.numpy_support import as_dtype
 
 from .checks import read
 from .declarations import Declared, named, numba_type
-from .reading import Function
+from .reading import Reading
 from .records import register_member
 from .rewrite import Rewrite
 from .scalars import ArrayOf
@@ -90,7 +90,7 @@ class _Declared(CUDADispatcher):
     element or dimension count. A record or a type parameter keeps the type the caller gives it.
     """
 
-    def __init__(self, read: Function, *, inline: bool) -> None:
+    def __init__(self, read: Reading, *, inline: bool) -> None:
         rebuilt = Rewrite(read).rebuilt()
         options = cuda.jit(device=True)(rebuilt).targetoptions | {"forceinline": inline}
         super().__init__(rebuilt, targetoptions=options)

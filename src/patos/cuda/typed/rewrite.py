@@ -14,13 +14,13 @@ from types import CodeType, FunctionType
 import numpy as np
 
 from .declarations import Returns, Signature, is_scalar
-from .reading import Function
+from .reading import Reading
 
 
 class Rewrite:
-    """One function read by `Function`, rebuilt so its annotations convert what they declare."""
+    """One function read by `Reading`, rebuilt so its annotations convert what they declare."""
 
-    def __init__(self, function: Function) -> None:
+    def __init__(self, function: Reading) -> None:
         self.function = function
 
     def rebuilt(self) -> FunctionType:
@@ -60,7 +60,7 @@ class Rewrite:
 class _Conversions(ast.NodeTransformer):
     """Rewrite one function so every return and every assignment to a declared local converts."""
 
-    def __init__(self, function: Function) -> None:
+    def __init__(self, function: Reading) -> None:
         self.function = function
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.stmt | None:

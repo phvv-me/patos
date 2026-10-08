@@ -2,9 +2,8 @@
 scratch reused across calls (`memory`). Launching is the kernel's own (`typed.kernels`)."""
 
 from .memory import Allocator, ArrayModule, DeviceBuffer, Workspace
-from .streams import DeviceStream, PipelineEvent, PipelineStream, settle_uploads
+from .streams import Event, Stream, settle_uploads
 
 __all__ = [
-    "Allocator", "ArrayModule", "DeviceBuffer", "DeviceStream", "PipelineEvent",
-    "PipelineStream", "Workspace", "settle_uploads",
+    "Allocator", "ArrayModule", "DeviceBuffer", "Event", "Stream", "Workspace", "settle_uploads",
 ]  # fmt: skip
