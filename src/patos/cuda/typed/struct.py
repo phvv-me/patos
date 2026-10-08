@@ -13,7 +13,7 @@ from .arguments import Argument, argument, record_argument
 from .declarations import Declared, Record, declared, is_scalar, named
 from .decorators import Method
 from .kernels import Kernel
-from .scalars import ArrayOf, converted
+from .scalars import ArrayOf, ConstantOf, converted
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -130,8 +130,13 @@ class Struct:
         """What a kernel receives for this record, marshalled on its first launch."""
         held = self._argument
         if held is None:
-            fields = [argument(getattr(self, name)) for name in self.__record_fields__]
-            held = record_argument(type(self), fields)
+            fields, constants = {}, []
+            for name, kind in self.declarations().items():
+                if isinstance(kind, ConstantOf):
+                    constants.append((name, getattr(self, name)))
+                else:
+                    fields[name] = argument(getattr(self, name))
+            held = record_argument(type(self), fields, tuple(constants))
             object.__setattr__(self, "_argument", held)
         return held
 
@@ -159,6 +164,10 @@ def _received(kind: Declared, value: Value) -> Value:
     An integer converts with an overflow check and a float never truncates into an integer; an
     array is checked before a host one uploads.
     """
+    if isinstance(kind, ConstantOf):
+        if not isinstance(value, int | np.integer):
+            raise TypeError(f"is a {type(value).__name__}, not the {kind.kind.__name__} declared")
+        return kind.kind(value)
     if kind is bool or is_scalar(kind):
         if not isinstance(value, int | float | np.number):
             raise TypeError(f"is a {type(value).__name__}, not the {named(kind)} declared")

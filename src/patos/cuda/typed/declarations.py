@@ -14,7 +14,7 @@ from typing import Protocol, TypeAliasType, TypeIs, TypeVar, final, get_args, ge
 import numpy as np
 from numba import types
 
-from .scalars import ArrayOf, canonical
+from .scalars import ArrayOf, ConstantOf, canonical
 
 
 @final
@@ -45,6 +45,7 @@ type Evaluated = (
     | TypeVar
     | GenericAlias
     | ArrayOf
+    | ConstantOf
     | annotationlib.ForwardRef
     | ModuleType
     | Callable
@@ -55,7 +56,7 @@ type Evaluated = (
 # What a reading knows of a value: its scalar type, `bool`, a literal, or None for unknown.
 type Kind = type[np.generic] | type[bool] | Literal | None
 # What an annotation declares: a kind, an array, a record, or a tuple of these.
-type Declared = Kind | ArrayOf | Record | tuple[Declared, ...]
+type Declared = Kind | ArrayOf | ConstantOf | Record | tuple[Declared, ...]
 type Returns = Declared | type[None]
 # Anything the predicates below are asked about.
 type Subject = Evaluated | Returns
@@ -115,7 +116,7 @@ def declared(value: Evaluated) -> Declared:
     A scalar declares as the numpy type it names. None names no device type.
     """
     value = unaliased(value)
-    if value is bool or isinstance(value, ArrayOf):
+    if value is bool or isinstance(value, ArrayOf | ConstantOf):
         return value
     if _is_record(value):
         return Record(value)

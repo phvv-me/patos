@@ -41,11 +41,15 @@ class RecordType(types.Type):
 
     cls: ClassVar[type[Struct]]
 
-    def __init__(self, fields: tuple[tuple[str, types.Type], ...]) -> None:
+    def __init__(
+        self, fields: tuple[tuple[str, types.Type], ...], constants: tuple[tuple[str, int], ...]
+    ) -> None:
         self.fields = fields
         self.members = dict(fields)
-        held = ", ".join(f"{name}: {kind}" for name, kind in fields)
-        super().__init__(f"{self.cls.__module__}.{self.cls.__qualname__}({held})")
+        self.constants = dict(constants)
+        held = [f"{name}: {kind}" for name, kind in fields]
+        held += [f"{name}={value!r}" for name, value in constants]
+        super().__init__(f"{self.cls.__module__}.{self.cls.__qualname__}({', '.join(held)})")
 
 
 class _Model(models.StructModel):
@@ -58,11 +62,16 @@ class _Fields(AttributeTemplate):
     key = RecordType
 
     def generic_resolve(self, record: RecordType, attr: str) -> types.Type | None:
+        if attr in record.constants:
+            return types.literal(record.constants[attr])
         return record.members.get(attr)
 
 
 @lowering_registry.lower_getattr_generic(RecordType)
 def _field(context, builder: ir.IRBuilder, record: RecordType, value: ir.Value, attr: str):
+    if attr in record.constants:
+        constant = record.constants[attr]
+        return context.get_constant(types.literal(constant).literal_type, constant)
     fields = cgutils.create_struct_proxy(record)(context, builder, value=value)
     return impl_ret_borrowed(context, builder, record.members[attr], getattr(fields, attr))
 

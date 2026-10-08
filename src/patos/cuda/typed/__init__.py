@@ -26,10 +26,10 @@ from .decorators import device
 from .intrinsics import ptx
 from .kernels import Kernel, Per, kernel
 from .reading import AnnotationError
-from .scalars import i16, i32, i64, number, u8, u16, u32, u64, unsigned
+from .scalars import Constant, i16, i32, i64, number, u8, u16, u32, u64, unsigned
 from .struct import Struct
 
 __all__ = [
-    "AnnotationError", "Kernel", "Per", "Struct", "cuda", "device", "i16", "i32", "i64", "kernel",
-    "number", "ptx", "u8", "u16", "u32", "u64", "unsigned",
+    "AnnotationError", "Constant", "Kernel", "Per", "Struct", "cuda", "device", "i16", "i32",
+    "i64", "kernel", "number", "ptx", "u8", "u16", "u32", "u64", "unsigned",
 ]  # fmt: skip

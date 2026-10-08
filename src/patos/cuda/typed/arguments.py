@@ -36,20 +36,22 @@ def argument(value: Struct | Shaped | np.generic | int | float | bool) -> Argume
     return marshalled(value)
 
 
-def record_argument(cls: type[Struct], fields: list[Argument]) -> Argument:
-    """The argument of a `cls` record whose fields, in order, marshalled to `fields`."""
+def record_argument(
+    cls: type[Struct], fields: dict[str, Argument], constants: tuple[tuple[str, int], ...]
+) -> Argument:
+    """The argument of a `cls` record whose fields marshalled to `fields`, in order, and whose
+    constants, part of its type, marshal to nothing."""
     kinds: list[types.Type] = []
     values: list = []
-    for kind, held in fields:
+    for kind, held in fields.values():
         kinds.append(kind)
         values.extend(held)
     # Numba interns its types and every record type cached here holds the types of its fields,
     # so they live as long as the key that names them by identity, which costs no hashing.
-    key = (cls, *map(id, kinds))
+    key = (cls, constants, *map(id, kinds))
     kind = _records.get(key)
     if kind is None:
-        held_kinds = tuple(zip(cls.__record_fields__, kinds, strict=True))
-        kind = _records[key] = record_type(cls)(held_kinds)
+        kind = _records[key] = record_type(cls)(tuple(zip(fields, kinds, strict=True)), constants)
     return kind, tuple(values)
 
 

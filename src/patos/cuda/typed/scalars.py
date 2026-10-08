@@ -50,6 +50,29 @@ class ArrayOf:
         return dtype == self.element if self.concrete else np.issubdtype(dtype, self.element)
 
 
+@final
+@dataclass(frozen=True)
+class ConstantOf:
+    """A record field whose value is part of the record's device type, compiled as a literal."""
+
+    kind: type[int] | type[bool]
+
+
+if TYPE_CHECKING:
+    type Constant[T] = T
+else:
+
+    class Constant:
+        """A record field whose value is part of the record's device type: `width: Constant[int]`.
+
+        Device code reads it as a literal, so it sizes a local array or unrolls a loop the way a
+        closure constant does, and each value compiles its own kernels.
+        """
+
+        def __class_getitem__(cls, kind):
+            return ConstantOf(kind)
+
+
 def converted(
     kind: type[np.number] | type[bool], value: int | float | np.number
 ) -> np.number | bool:
