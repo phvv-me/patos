@@ -12,19 +12,19 @@ from ..typed import cuda, device, i32, ptx
 _FULL_WARP = 0xFFFFFFFF
 # One step per offset: shuffle the running total up, and add it where a lane that far down exists.
 _SCAN_STEPS = "".join(
-    f"shfl.sync.up.b32 received|exists, total, {offset}, 0, 0xffffffff;\n"
+    f"shfl.sync.up.b32 received|exists, total, {offset}, 0, {_FULL_WARP:#x};\n"
     "@exists add.s32 total, total, received;\n"
     for offset in (1, 2, 4, 8, 16)
 )
 
 
-@ptx("redux.sync.add.s32 $result, $value, 0xffffffff;")
+@ptx(f"redux.sync.add.s32 $result, $value, {_FULL_WARP:#x};")
 def sum(value: i32) -> i32:
     """Sum `value` across the warp, every lane receiving the total."""
     ...
 
 
-@ptx("redux.sync.min.u32 $result, $value, 0xffffffff;")
+@ptx(f"redux.sync.min.u32 $result, $value, {_FULL_WARP:#x};")
 def min_nonnegative(value: i32) -> i32:
     """The lowest non-negative `value` any lane holds, or -1 when every lane holds -1.
 

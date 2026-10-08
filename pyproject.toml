@@ -108,6 +108,14 @@ ignore-missing-imports = ["numpy", "torch", "numba", "numba.*", "llvmlite", "llv
 # the same on every host and rests on the host code that calls them.
 replace-imports-with-any = ["numba", "numba.*", "llvmlite", "llvmlite.*", "cupy", "cupy.*", "cuda.*"]
 
+# A device function returns a plain `-1` or a `u64` payload where its annotation says `i64`,
+# because `device` converts every `return` to the annotation, a rewrite no checker sees.
+[[tool.pyrefly.sub-config]]
+matches = "src/patos/cuda/primitives/hash.py"
+
+[tool.pyrefly.sub-config.errors]
+bad-return = false
+
 # A `Struct` subclass becomes a named tuple of fields read at class creation, which pyrefly takes for
 # a malformed functional `namedtuple` definition, since it expects the field names spelled out.
 [[tool.pyrefly.sub-config]]
@@ -135,7 +143,14 @@ include = ["src/patos/torch/**", "src/patos/cuda/**"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 
-# An intrinsic's stub declares only a signature; `ptx` or `nvvm` supplies its body.
+# The same device-return rewrite as pyrefly's `bad-return` sub-config above.
+[[tool.ty.overrides]]
+include = ["src/patos/cuda/primitives/hash.py"]
+
+[tool.ty.overrides.rules]
+invalid-return-type = "ignore"
+
+# An intrinsic's stub declares only a signature; `ptx` supplies its body.
 [[tool.ty.overrides]]
 include = ["src/patos/cuda/primitives/warp.py"]
 
@@ -234,12 +249,13 @@ exclude = ["src/patos/cuda/typed/declarations.py"]
 
 # `left` and `right` are the operands of a binary operator, and `operand`, `other`, `target` and
 # `value` the AST nodes of an operation or a store; warp.py holds device functions that cutoken's
-# kernels call positionally.
+# kernels call positionally, as they do `hash.probe`.
 [tool.mcmr.rules."ALL-PARA0001"]
 exclude = [
   "src/patos/cuda/typed/arithmetic.py",
   "src/patos/cuda/typed/checks.py",
   "src/patos/cuda/typed/rewrite.py",
+  "src/patos/cuda/primitives/hash.py",
   "src/patos/cuda/primitives/warp.py",
 ]
 
