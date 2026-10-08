@@ -1,10 +1,15 @@
-"""The open-addressed pair tables the host builds, the kernels probe, and the hash both share."""
+"""The open-addressed tables the host builds and the kernels read, and the hash both share.
+
+A `PairTable` maps 64-bit keys to 64-bit payloads, a `Bitmap` holds one flag per bit, and a
+`Filter` is a bitmap of hashed values whose miss is certain. Each is a record whose device members
+read like the Python they mirror: `table.get(key)`, `bit in bitmap`, `value in filter`.
+"""
 
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ..typed import device, i64, u64
+from ..typed import Struct, device, i64, u64
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 # The key of an empty slot: all ones, which a table must never store as a real key.
@@ -75,47 +80,6 @@ def build_pair_slots(entries: Sequence[tuple[int, int]]) -> np.ndarray:
     return slots
 
 
-def build_filter(values: Iterable[int]) -> np.ndarray:
-    """Build the one-hash bitmap that holds every value given, and a few it was never given.
-
-    A miss is certain and a hit is a hint, which is the whole use: a probe into the pair table
-    is skipped only when the filter says the key cannot be there.
-
-    Returns a `uint64` array with shape `[FILTER_BITS / 64]` of bitmap words.
-    """
-    words = np.zeros(_FILTER_BITS // 64, dtype=u64)
-    for value in values:
-        bit = splitmix(value) & (_FILTER_BITS - 1)
-        words[bit >> 6] |= 1 << u64(bit & 63)
-    return words
-
-
-@device
-def bitmap_holds(words: u64[int], bit: u64) -> bool:
-    """Whether bit `bit` of the bitmap packed into 64-bit `words` is set."""
-    return (words[bit >> 6] >> (bit & 63)) & 1 != 0
-
-
-@device
-def filter_holds(words: u64[int], value: u64) -> bool:
-    """Whether the filter may hold `value`, which is certain only when this is false."""
-    return bitmap_holds(words, device_splitmix(value) & (_FILTER_BITS - 1))
-
-
-@device
-def probe(slots: u64[int], mask: u64, key: u64) -> i64:
-    """The payload `key` maps to in a table `build_pair_slots` built, or -1 when it holds none.
-
-    mask: the table's capacity less one.
-    """
-    slot = device_splitmix(key) & mask
-    while slots[slot * 2] != EMPTY_KEY:
-        if slots[slot * 2] == key:
-            return slots[slot * 2 + 1]
-        slot = (slot + 1) & mask
-    return -1
-
-
 def find_pair(slots: np.ndarray, left: int, *, right: int) -> int:
     """Return a pair table payload, or negative one when absent.
 
@@ -129,3 +93,70 @@ def find_pair(slots: np.ndarray, left: int, *, right: int) -> int:
             return int(slots[slot * 2 + 1])
         slot = (slot + 1) & mask
     return -1
+
+
+class PairTable(Struct):
+    """A table `build_pair_slots` laid out, read on the device as `table.get(key)`.
+
+    slots: keys at even and payloads at odd slots.
+    mask: the capacity less one.
+    """
+
+    slots: u64[int]
+    mask: u64
+
+    @classmethod
+    def build(cls, entries: Sequence[tuple[int, int]]) -> PairTable:
+        """The table of `entries`, packed key and payload pairs, uploaded."""
+        slots = build_pair_slots(entries)
+        return cls(slots, slots.size // 2 - 1)
+
+    @device
+    def get(self, key: u64) -> i64:
+        """The payload `key` maps to, or -1 when the table holds none."""
+        slots = self.slots
+        slot = device_splitmix(key) & self.mask
+        while slots[slot * 2] != EMPTY_KEY:
+            if slots[slot * 2] == key:
+                return slots[slot * 2 + 1]
+            slot = (slot + 1) & self.mask
+        return -1
+
+
+class Bitmap(Struct):
+    """A flag per bit packed sixty-four to a word, asked `bit in bitmap`; no bit lies past it."""
+
+    words: u64[int]
+
+    @device
+    def __contains__(self, bit: u64) -> bool:
+        return (self.words[bit >> 6] >> (bit & 63)) & 1 != 0
+
+    @classmethod
+    def pack(cls, flags: np.ndarray) -> Bitmap:
+        """The bitmap whose bit `i` is `flags[i]`, packed into `uint64` words and uploaded.
+
+        flags: a `bool` array with shape `[n]`, `n` a multiple of 64.
+        """
+        return cls(np.packbits(flags, bitorder="little").view(u64))
+
+
+class Filter(Struct):
+    """A one-hash bitmap holding every value it was built from, and a few it never was.
+
+    A miss is certain and a hit is a hint, which is the whole use: a probe into a pair table is
+    skipped only when the filter says the key cannot be there.
+    """
+
+    bits: Bitmap
+
+    @device
+    def __contains__(self, value: u64) -> bool:
+        return (device_splitmix(value) & (_FILTER_BITS - 1)) in self.bits
+
+    @classmethod
+    def build(cls, values: Iterable[int]) -> Filter:
+        """The filter of `values`, uploaded."""
+        flags = np.zeros(_FILTER_BITS, dtype=np.bool_)
+        flags[[splitmix(value) & (_FILTER_BITS - 1) for value in values]] = True
+        return cls(Bitmap.pack(flags))

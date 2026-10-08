@@ -20,16 +20,16 @@ def read(function: FunctionType, *, kernel: bool, owner: type | None = None) -> 
     Raises `AnnotationError` naming every line whose annotations are missing, contradict each
     other, or are repeated by a cast.
     """
-    read = Reading(function, kernel=kernel, owner=owner)
-    Checker(read, Inference(read)).check()
-    return read
+    reading = Reading(function, kernel=kernel, owner=owner)
+    Checker(reading, Inference(reading)).check()
+    return reading
 
 
 class Checker:
     """The checks one function passes, reported with the issues its reading raised."""
 
-    def __init__(self, function: Reading, inference: Inference) -> None:
-        self.function = function
+    def __init__(self, reading: Reading, inference: Inference) -> None:
+        self.reading = reading
         self.inference = inference
 
     def check(self) -> None:
@@ -37,17 +37,17 @@ class Checker:
 
         An annotation fails when it is missing, contradicts another, or a cast repeats it.
         """
-        for node in self.function.walk():
+        for node in self.reading.walk():
             if isinstance(node, ast.Return):
                 self._check_return(node)
             if isinstance(node, ast.Call):
                 self._check_arguments(node)
             self._check_conversion(node)
-        self.function.raise_issues()
+        self.reading.raise_issues()
 
     def _check_arguments(self, call: ast.Call) -> None:
         """Flag every argument of a device function that casts to its parameter's own type."""
-        callee = self.function.callee(call)
+        callee = self.reading.callee(call)
         if callee is None:
             return
         for argument, parameter in zip(call.args, callee.parameters, strict=False):
@@ -59,10 +59,10 @@ class Checker:
 
     def _check_conversion(self, node: ast.AST) -> None:
         """Flag `node` when it is a cast, or holds one, that something else already converts."""
-        returns = self.function.returns
+        returns = self.reading.returns
         match node:
             case ast.Call() if (
-                cast := self.function.cast(node)
+                cast := self.reading.cast(node)
             ) is not None and self.inference.kind(node.args[0]) == cast:
                 self._redundant(node, f"`{ast.unparse(node.args[0])}` is already {named(cast)}")
             case (
@@ -88,25 +88,25 @@ class Checker:
                 self._operand(right, left, combined)
 
     def _check_return(self, node: ast.Return) -> None:
-        returns, value = self.function.returns, node.value
+        returns, value = self.reading.returns, node.value
         if returns is NoneType:
             if value is not None:
-                self.function.issue(node, "returns a value where None is declared")
+                self.reading.issue(node, "returns a value where None is declared")
         elif value is None:
-            self.function.issue(node, f"returns nothing where {named(returns)} is declared")
+            self.reading.issue(node, f"returns nothing where {named(returns)} is declared")
         elif isinstance(returns, tuple) and not self._returns_elements(value, returns):
-            self.function.issue(node, f"return the {len(returns)} elements so each converts")
+            self.reading.issue(node, f"return the {len(returns)} elements so each converts")
 
     def _converted_by(self, kind: Returns, converter: str, value: ast.expr) -> None:
         for branch in _branches(value):
-            if kind is not None and self.function.cast(branch) is kind:
+            if kind is not None and self.reading.cast(branch) is kind:
                 self._redundant(branch, f"{converter} converts to {named(kind)}")
 
     def _operand(
         self, operand: ast.expr, other: ast.expr, meet: Callable[[Declared, Declared], Kind]
     ) -> None:
         """Flag `operand` when it casts to the type `other` has, which the operator converts to."""
-        cast = self.function.cast(operand)
+        cast = self.reading.cast(operand)
         if (
             cast is None
             or not isinstance(operand, ast.Call)
@@ -119,7 +119,7 @@ class Checker:
             )
 
     def _redundant(self, cast: ast.expr, reason: str) -> None:
-        self.function.issue(cast, f"`{ast.unparse(cast)}` is a redundant cast: {reason}")
+        self.reading.issue(cast, f"`{ast.unparse(cast)}` is a redundant cast: {reason}")
 
     def _returns_elements(self, value: ast.expr, returns: tuple[Declared, ...]) -> bool:
         """Whether `value` is a tuple the return annotation converts element by element.
@@ -130,16 +130,16 @@ class Checker:
             return len(value.elts) == len(returns)
         if isinstance(value, ast.Name):
             return self.inference.kinds.get(value.id) == returns
-        callee = self.function.callee(value)
+        callee = self.reading.callee(value)
         return callee is not None and callee.returns == returns
 
     def _stored(self, target: ast.expr) -> tuple[Kind, str]:
         """The type a store to `target` converts to, and what does: a declaration or an array."""
         if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
-            array = self.function.parameters.get(target.value.id)
+            array = self.reading.parameters.get(target.value.id)
             if isinstance(array, ArrayOf) and array.concrete:
                 return array.element, f"the store into `{target.value.id}`"
-        return self.function.declared_scalar(target), f"the declaration of `{ast.unparse(target)}`"
+        return self.reading.declared_scalar(target), f"the declaration of `{ast.unparse(target)}`"
 
 
 def _branches(value: ast.expr) -> Iterator[ast.expr]:

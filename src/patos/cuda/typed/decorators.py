@@ -90,11 +90,11 @@ class _Declared(CUDADispatcher):
     element or dimension count. A record or a type parameter keeps the type the caller gives it.
     """
 
-    def __init__(self, read: Reading, *, inline: bool) -> None:
-        rebuilt = Rewrite(read).rebuilt()
+    def __init__(self, reading: Reading, *, inline: bool) -> None:
+        rebuilt = Rewrite(reading).rebuilt()
         options = cuda.jit(device=True)(rebuilt).targetoptions | {"forceinline": inline}
         super().__init__(rebuilt, targetoptions=options)
-        self.declared = read.parameters
+        self.declared = reading.parameters
 
     def compile_device(self, args: tuple[types.Type, ...], return_type: types.Type | None = None):
         declared = tuple(

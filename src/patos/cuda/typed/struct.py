@@ -127,20 +127,25 @@ class Struct:
         if stray := set(zeroed) - sized.keys():
             raise TypeError(f"{cls.__name__} zeroes {', '.join(sorted(stray))}, given no size")
         for name, size in sized.items():
-            role, dtype = roles[name]
+            if (held := roles[name]) is None:
+                raise TypeError(
+                    f"{cls.__name__}.{name} declares {named(cls.declarations()[name])}, which has "
+                    "no one dtype to take"
+                )
+            role, dtype = held
             taken = workspace.zeros if name in zeroed else workspace.take
             values[name] = taken(role, size, dtype)
         return cls(**values)
 
     @classmethod
     @cache
-    def _roles(cls) -> dict[str, tuple[str, np.dtype]]:
-        """The workspace role and dtype of each array field a size can take."""
+    def _roles(cls) -> dict[str, tuple[str, np.dtype] | None]:
+        """The workspace role and dtype of each array field, None for an open element."""
         prefix = f"{cls.__module__}.{cls.__qualname__}"
         return {
-            name: (f"{prefix}.{name}", np.dtype(kind.element))
+            name: (f"{prefix}.{name}", np.dtype(kind.element)) if kind.concrete else None
             for name, kind in cls.declarations().items()
-            if isinstance(kind, ArrayOf) and kind.concrete
+            if isinstance(kind, ArrayOf)
         }
 
     def __kernel_argument__(self) -> Argument:

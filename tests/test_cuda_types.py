@@ -25,6 +25,7 @@ from numba.cuda.dispatcher import CUDADispatcher
 from numba.cuda.target import CUDATypingContext
 from numba.np.numpy_support import as_dtype, from_dtype
 
+from patos.cuda.primitives import Bitmap, Filter, PairTable
 from patos.cuda.runtime import Workspace
 from patos.cuda.typed import (
     AnnotationError,
@@ -148,6 +149,19 @@ def total(values: unsigned[int], sums: u64[int]) -> None:
     item = cuda.grid(1)
     if item < values.size:
         cuda.atomic.add(sums, 0, u64(values[item]))
+
+
+@kernel
+def looked_up(
+    table: PairTable, members: Filter, flags: Bitmap, keys: u64[int], found: i64[int, int]
+) -> None:
+    """Each thread answers its key through the three hash records, flags by its low ten bits."""
+    item = cuda.grid(1)
+    if item < keys.size:
+        key = keys[item]
+        found[item, 0] = table.get(key)
+        found[item, 1] = key in members
+        found[item, 2] = (key & 1023) in flags
 
 
 def noop(count: i32) -> None:
@@ -968,7 +982,7 @@ _REFUSALS: dict[str, tuple[Refusal, type[Exception], str]] = {
     "a replacement that does not fit": (
         lambda tables: copy.replace(tables, mask=-1),
         TypeError,
-        "Tables: mask Python integer -1 out of bounds for uint32",
+        "Tables: mask is -1, out of range of the u32 declared",
     ),
     "an assignment": (
         lambda tables: Tables.__setattr__(tables, "mask", 1),
@@ -1005,7 +1019,7 @@ _REFUSALS: dict[str, tuple[Refusal, type[Exception], str]] = {
             Workspace(cp), tables=tables, keys=2, found=cp.zeros((1, 6), np.uint64)
         ),
         TypeError,
-        "Lookup: keys is int, not the",
+        "Lookup.keys declares unsigned[int], which has no one dtype to take",
     ),
     "a strided device array, where the record marshals": (
         lambda tables: argument(Tables(tables.slots[::2], 1, 2)),
@@ -1176,30 +1190,38 @@ _UNDECLARED = {
     "element": (
         lambda: scattered(row=cp.zeros(4, np.int32)),
         TypeError,
-        "scatter's `row` receives array(int32, 1d, C) where i64[int] is declared",
+        "scatter's `row` is array(int32, 1d, C), where i64[int] is declared",
     ),
     "dimensions": (
         lambda: scattered(row=cp.zeros((2, 2), np.int64)),
         TypeError,
-        "scatter's `row` receives array(int64, 2d, C) where i64[int] is declared",
+        "scatter's `row` is array(int64, 2d, C), where i64[int] is declared",
     ),
     "strided": (
         lambda: scattered(row=cp.zeros(8, np.int64)[::2]),
         TypeError,
-        "scatter's `row` receives array(int64, 1d, A) where i64[int] is declared",
+        "scatter's `row` is strided, not contiguous, where i64[int] is declared",
     ),
     "transposed": (
         lambda: scattered(table=cp.zeros((3, 2), np.int16).T),
         TypeError,
-        "scatter's `table` receives array(int16, 2d, A) where i16[int, int] is declared",
+        "scatter's `table` is strided, not contiguous, where i16[int, int] is declared",
     ),
     "open element": (
         lambda: total[4](cp.zeros(4, np.int32), cp.zeros(1, np.uint64)),
         TypeError,
-        "total's `values` receives array(int32, 1d, C) where",
+        "total's `values` is array(int32, 1d, C), where",
     ),
-    "overflow": (lambda: scattered(small=256), OverflowError, "out of bounds for uint8"),
-    "float": (lambda: scattered(signed=1.5), TypeError, "is a float, not the i16 declared"),
+    "overflow": (
+        lambda: scattered(small=256),
+        OverflowError,
+        "scatter's `small` is 256, out of range of the u8 declared",
+    ),
+    "float": (
+        lambda: scattered(signed=1.5),
+        TypeError,
+        "scatter's `signed` is a float, not the i16 declared",
+    ),
     "device call": (
         lambda: _DEVICE.delegate[1](cp.zeros(2, np.int32), cp.zeros(1, np.uint8)),
         TypingError,
@@ -1215,8 +1237,8 @@ def test_a_launch_refuses_what_a_parameter_does_not_declare(
 ) -> None:
     """A launch refuses an argument its parameter does not declare, naming the parameter.
 
-    An array of another element, dimension count or layout is refused, a scalar converts or fails,
-    and a device function refuses such an array at the call.
+    An array of another element, dimension count or layout is refused, as is a scalar its declared
+    type cannot hold, and a device function refuses such an array at the call.
     """
     with pytest.raises(error, match=re.escape(message)):
         launch()
@@ -1235,3 +1257,30 @@ def test_an_open_element_compiles_once_per_dtype_it_meets() -> None:
         total[5](values, sums)
 
     assert (sums.get().tolist(), len(total.compiled)) == ([40], 3)
+
+
+@gpu
+@given(
+    entries=st.dictionaries(st.integers(0, 2**64 - 2), st.integers(0, 2**63 - 1), min_size=1),
+    strays=st.lists(st.integers(0, 2**64 - 2), max_size=8),
+)
+@settings(deadline=None, max_examples=25)
+def test_the_hash_records_answer_on_the_device_what_the_host_built_them_from(
+    *, entries: dict[int, int], strays: list[int]
+) -> None:
+    """Each record answers on the device what the host built it from.
+
+    A pair table answers each key's payload and -1 for a stray, a filter holds every value it was
+    built from, and a bitmap holds exactly the flags it packed.
+    """
+    keys = np.array([*entries, *strays], dtype=np.uint64)
+    flags = np.zeros(1024, dtype=np.bool_)
+    flags[[key & 1023 for key in entries]] = True
+    found = cp.zeros((len(keys), 3), np.int64)
+    table, members = PairTable.build(list(entries.items())), Filter.build(entries)
+    looked_up[len(keys)](table, members, Bitmap.pack(flags), cp.asarray(keys), found)
+
+    rows = found.get()
+    assert rows[:, 0].tolist() == [entries.get(key, -1) for key in keys.tolist()]
+    assert rows[: len(entries), 1].all()
+    assert rows[:, 2].tolist() == [int(flags[key & 1023]) for key in keys.tolist()]

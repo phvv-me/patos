@@ -35,8 +35,8 @@ _FOLDED: dict[type[ast.operator], Callable[[int, int], int]] = {
 class Inference:
     """The type every local of one function takes, and the type of any of its expressions."""
 
-    def __init__(self, function: Reading) -> None:
-        self.function = function
+    def __init__(self, reading: Reading) -> None:
+        self.reading = reading
         self.kinds = self._inferred()
 
     def kind(self, node: ast.expr, kinds: dict[str, Declared] | None = None) -> Declared:
@@ -66,7 +66,7 @@ class Inference:
                 array = record.field(field)
                 return array.element if isinstance(array, ArrayOf) and array.concrete else None
             case ast.Name() | ast.Attribute():
-                return self._constant(resolved(node, self.function.namespace))
+                return self._constant(resolved(node, self.reading.namespace))
             case ast.Subscript(
                 value=ast.Name(id=name), slice=ast.Constant(value=int() as index)
             ) if isinstance(elements := kinds.get(name), tuple):
@@ -74,14 +74,14 @@ class Inference:
             case ast.Subscript(value=ast.Name(id=name), slice=index) if not isinstance(
                 index, ast.Slice
             ):
-                array = self.function.parameters.get(name)
+                array = self.reading.parameters.get(name)
                 return array.element if isinstance(array, ArrayOf) and array.concrete else None
             case ast.Call(func=ast.Name(id="min" | "max"), args=[left, right]):
                 return combined(self.kind(left, kinds), self.kind(right, kinds))
             case ast.Call():
-                if (cast := self.function.cast(node)) is not None:
+                if (cast := self.reading.cast(node)) is not None:
                     return cast
-                callee = self.function.callee(node)
+                callee = self.reading.callee(node)
                 returns = callee.returns if callee is not None else None
                 if returns is bool:
                     return bool
@@ -166,7 +166,7 @@ class Inference:
             return self.kind(value.elts[index], kinds)
         if isinstance(value, ast.Name) and isinstance(elements := kinds.get(value.id), tuple):
             return _scalar_at(elements, index)
-        callee = self.function.callee(value)
+        callee = self.reading.callee(value)
         returns = callee.returns if callee is not None else None
         return returns[index] if isinstance(returns, tuple) and index < len(returns) else None
 
@@ -176,19 +176,19 @@ class Inference:
         Agreement is as far as this reading can tell, so a cast of the local can be judged too.
         """
         sources: dict[str, list[_Origin]] = defaultdict(list)
-        for node in self.function.walk():
+        for node in self.reading.walk():
             for name, source in self._bindings(node):
                 sources[name].append(source)
         undeclared = {
-            name: found for name, found in sources.items() if name not in self.function.declared
+            name: found for name, found in sources.items() if name not in self.reading.declared
         }
         stored = [
             node.id
-            for node in self.function.walk()
+            for node in self.reading.walk()
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
         ]
         kinds: dict[str, Declared] = (
-            dict.fromkeys([*self.function.parameters, *stored]) | self.function.declared
+            dict.fromkeys([*self.reading.parameters, *stored]) | self.reading.declared
         )
         for _ in range(len(undeclared) + 1):
             agreed = {name: self._agreed(name, found, kinds) for name, found in undeclared.items()}

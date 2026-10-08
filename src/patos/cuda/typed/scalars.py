@@ -82,11 +82,14 @@ def converted(
         return bool(value)
     if isinstance(value, np.number) and type(value) is kind:
         return value
+    spelled = SPELLINGS.get(kind, kind.__name__)
     if isinstance(value, int | np.integer):
-        return kind(int(value))
+        try:
+            return kind(int(value))
+        except OverflowError:
+            raise OverflowError(f"is {value}, out of range of the {spelled} declared") from None
     if isinstance(value, float | np.floating) and not issubclass(kind, np.integer):
         return cast("np.number", np.asarray(value, dtype=kind)[()])
-    spelled = SPELLINGS.get(kind, kind.__name__)
     raise TypeError(f"is a {type(value).__name__}, not the {spelled} declared")
 
 
@@ -114,15 +117,17 @@ if TYPE_CHECKING:
         nbytes: int
 
         @overload
-        def __getitem__(self, index: Index | tuple[Index, ...]) -> T: ...
+        def __getitem__(self, index: Subscript | tuple[Subscript, ...]) -> T: ...
 
         @overload
         def __getitem__(self, index: slice | Shaped) -> Self: ...
 
-        def __getitem__(self, index: Index | tuple[Index, ...] | slice | Shaped) -> T | Self: ...
+        def __getitem__(
+            self, index: Subscript | tuple[Subscript, ...] | slice | Shaped
+        ) -> T | Self: ...
 
         def __setitem__(
-            self, index: Index | tuple[Index, ...] | slice | Shaped, value: Operand
+            self, index: Subscript | tuple[Subscript, ...] | slice | Shaped, value: Operand
         ) -> None: ...
 
         def __len__(self) -> int: ...
@@ -168,7 +173,7 @@ if TYPE_CHECKING:
 
     # What arithmetic meets a numeric value with, and what indexes an array.
     type Operand = int | np.integer | Shaped | Numeric
-    type Index = int | np.integer | Numeric
+    type Subscript = int | np.integer | u8 | u16 | u32 | u64 | i16 | i32 | i64
 
     # A type called converts to its scalar, which an array's elements are as well.
     class u8[*Shape = *tuple[()]](Numeric["u8", *Shape]):

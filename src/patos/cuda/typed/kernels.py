@@ -6,8 +6,9 @@ for a kernel that strides over its items. Defined in a `Struct` with an unannota
 a method of the record, launched as `record.kernel[items](*arguments)`.
 
 A launch converts every scalar to the type its parameter declares and hands cuda.core the
-arguments marshalled by hand, on the current CuPy stream. A kernel compiles once per layout of the
-arrays it is given, refusing an array whose element or dimensions differ from its declaration.
+arguments marshalled by hand, on the current CuPy stream. Arrays are contiguous and scalars arrive
+at their declared types, so a kernel compiles once, or once per dtype an open element
+(`unsigned[int]`) meets; an array of another element, dimension count or layout is refused.
 """
 
 from collections.abc import Callable
@@ -113,10 +114,14 @@ class Kernel:
         blocks, threads = grid
         if not blocks:
             return
-        marshalled = [
-            argument(value if convert is None else convert(value))
-            for value, convert in zip(arguments, self.converters, strict=True)
-        ]
+        try:
+            marshalled = [
+                argument(value if convert is None else convert(value))
+                for value, convert in zip(arguments, self.converters, strict=True)
+            ]
+        except TypeError, ValueError, OverflowError:
+            self._refuse(arguments)
+            raise
         kinds = tuple(kind for kind, _ in marshalled)
         # Numba interns its types and the cache keeps the ones a key names, so identity tells
         # signatures apart without hashing them.
@@ -125,14 +130,31 @@ class Kernel:
         values = chain.from_iterable(values for _, values in marshalled)
         launch(_stream(get_current_stream().ptr), _config(blocks, threads), kernel, *values)
 
+    def _refuse(self, arguments: tuple) -> None:
+        """Raise what converting the first refused scalar raised, naming its parameter."""
+        for name, value, convert in zip(self.names, arguments, self.converters, strict=True):
+            if convert is None:
+                continue
+            try:
+                convert(value)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise type(error)(f"{self.function.__qualname__}'s `{name}` {error}") from error
+
     def _compiled(self, kinds: tuple[types.Type, ...]) -> Compiled:
         """The cuda.core kernel `kinds` compile to, once each array matches its declaration."""
         for name, kind, given in zip(self.names, self.declared, kinds, strict=True):
-            if isinstance(kind, ArrayOf) and not _matches(kind, given):
-                raise TypeError(
-                    f"{self.function.__qualname__}'s `{name}` receives {given} where "
-                    f"{named(kind)} is declared"
-                )
+            if not isinstance(kind, ArrayOf):
+                continue
+            admitted = isinstance(given, types.Array) and kind.admits(
+                as_dtype(given.dtype), given.ndim
+            )
+            if admitted and given.layout == "C":
+                continue
+            held = "strided, not contiguous" if admitted else f"{given}"
+            raise TypeError(
+                f"{self.function.__qualname__}'s `{name}` is {held}, "
+                f"where {named(kind)} is declared"
+            )
         # numba-cuda 0.30 keeps no public handle to a compiled kernel's cuda.core kernel.
         compiled = self.dispatcher.compile(kinds)._codelibrary.get_cufunc().kernel
         self.compiled[tuple(map(id, kinds))] = (kinds, compiled)
@@ -177,15 +199,6 @@ def kernel(
     """
     compiled = partial(Kernel, per=per, threads=threads, strided=strided)
     return compiled if function is None else compiled(function)
-
-
-def _matches(kind: ArrayOf, given: types.Type) -> bool:
-    """Whether `given` is a contiguous array `kind` declares."""
-    return (
-        isinstance(given, types.Array)
-        and given.layout == "C"
-        and kind.admits(as_dtype(given.dtype), given.ndim)
-    )
 
 
 @cache

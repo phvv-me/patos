@@ -20,36 +20,36 @@ from .reading import Reading
 class Rewrite:
     """One function read by `Reading`, rebuilt so its annotations convert what they declare."""
 
-    def __init__(self, function: Reading) -> None:
-        self.function = function
+    def __init__(self, reading: Reading) -> None:
+        self.reading = reading
 
     def rebuilt(self) -> FunctionType:
         """The function with every conversion in place and its annotations dropped.
 
         It carries the signature its callers' checks read, as `device_signature`.
         """
-        original = self.function.function
+        original = self.reading.function
         # The module's own globals, updated in place, so a name the module defines later resolves.
-        namespace = self.function.namespace
+        namespace = self.reading.namespace
         namespace.update(_patos_numpy=np)
         rebuilt = FunctionType(self._code(), namespace, original.__name__)
         rebuilt.__doc__ = original.__doc__
         rebuilt.__qualname__ = original.__qualname__
         rebuilt.__dict__["device_signature"] = Signature(
-            tuple(self.function.parameters.values()), self.function.returns
+            tuple(self.reading.parameters.values()), self.reading.returns
         )
         return rebuilt
 
     def _code(self) -> CodeType:
         """The code object of the rewritten definition, compiled where the original was."""
-        definition = _Conversions(self.function).visit(self.function.definition)
+        definition = _Conversions(self.reading).visit(self.reading.definition)
         definition.decorator_list = []
         definition.type_params = []
         definition.returns = None
         for argument in definition.args.args:
             argument.annotation = None
-        ast.fix_missing_locations(self.function.tree)
-        module = compile(self.function.tree, self.function.function.__code__.co_filename, "exec")
+        ast.fix_missing_locations(self.reading.tree)
+        module = compile(self.reading.tree, self.reading.function.__code__.co_filename, "exec")
         return next(
             constant
             for constant in module.co_consts
@@ -60,8 +60,8 @@ class Rewrite:
 class _Conversions(ast.NodeTransformer):
     """Rewrite one function so every return and every assignment to a declared local converts."""
 
-    def __init__(self, function: Reading) -> None:
-        self.function = function
+    def __init__(self, reading: Reading) -> None:
+        self.reading = reading
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.stmt | None:
         if node.value is None:
@@ -74,7 +74,7 @@ class _Conversions(ast.NodeTransformer):
             case [ast.Name() as target]:
                 return self._assigned(target, value, node)
             case [ast.Tuple(elts=targets)] if any(
-                self.function.declared_scalar(target) for target in targets
+                self.reading.declared_scalar(target) for target in targets
             ):
                 return self._unpacked(targets, value, node)
         node.value = value
@@ -83,7 +83,7 @@ class _Conversions(ast.NodeTransformer):
     def visit_AugAssign(self, node: ast.AugAssign) -> ast.stmt:
         value = self.visit(node.value)
         target = node.target
-        if not isinstance(target, ast.Name) or self.function.declared_scalar(target) is None:
+        if not isinstance(target, ast.Name) or self.reading.declared_scalar(target) is None:
             node.value = value
             return node
         current = ast.Name(id=target.id, ctx=ast.Load())
@@ -91,16 +91,16 @@ class _Conversions(ast.NodeTransformer):
         return self._assigned(stored, ast.BinOp(left=current, op=node.op, right=value), node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        return self.generic_visit(node) if node is self.function.definition else node
+        return self.generic_visit(node) if node is self.reading.definition else node
 
     def visit_Return(self, node: ast.Return) -> ast.Return:
         if node.value is None:
             return node
-        value = self._returned(self.function.returns, self.visit(node.value))
+        value = self._returned(self.reading.returns, self.visit(node.value))
         return ast.copy_location(ast.Return(value=value), node)
 
     def _assigned(self, target: ast.expr, value: ast.expr, node: ast.stmt) -> ast.Assign:
-        kind = self.function.declared_scalar(target)
+        kind = self.reading.declared_scalar(target)
         if kind is not None:
             value = _converted(kind, value)
         return ast.copy_location(ast.Assign(targets=[target], value=value), node)
@@ -123,7 +123,7 @@ class _Conversions(ast.NodeTransformer):
         unpacked: list[ast.expr] = []
         conversions: list[ast.stmt] = []
         for target in targets:
-            if isinstance(target, ast.Name) and self.function.declared_scalar(target):
+            if isinstance(target, ast.Name) and self.reading.declared_scalar(target):
                 received = ast.Name(id=f"_received_{target.id}", ctx=ast.Store())
                 loaded = ast.Name(id=received.id, ctx=ast.Load())
                 conversions.append(self._assigned(target, loaded, node))
