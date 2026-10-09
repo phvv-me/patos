@@ -101,15 +101,22 @@ exclude = ["*.md"]
 
 [tool.pyrefly]
 project-includes = ["src", "tests", "typing"]
-search-path = ["src", "tests", "typing", "."]
+search-path = ["src", "tests", "typing", ".", "stubs"]
 # The `torch` and `cuda` extras are not installed in the gate, so their imports are absent there
 # rather than wrong. Naming exactly those keeps every other unresolved import an error.
 ignore-missing-imports = ["numpy", "torch", "numba", "numba.*", "llvmlite", "llvmlite.*", "cuda.*", "cupy", "cupy.*"]
-# numba and llvmlite carry no types a device function can be checked against: an intrinsic takes
-# no context, a dispatcher has no signature and the fixed-width scalars no arithmetic. With cupy
-# and cuda-python they read as untyped whether the extra is installed or not, so the verdict is
-# the same on every host and rests on the host code that calls them.
-replace-imports-with-any = ["numba", "numba.*", "llvmlite", "llvmlite.*", "cupy", "cupy.*", "cuda.*"]
+# `stubs/numba/cuda` types numba-cuda's device API as device code reads it, so `numba.cuda`
+# resolves there. The rest of numba and llvmlite reads as untyped whether the extra is installed or
+# not: the numba a checker finds is upstream's built-in CUDA target, not the numba-cuda that runs.
+# With cupy and cuda-python, the verdict is the same on every host and rests on the code that
+# calls them. A glob here takes its own module too, so `numba.cuda`'s submodules are each named.
+replace-imports-with-any = [
+  "numba", "numba.types.*", "numba.core.*", "numba.np.*", "numba.cuda.cgutils",
+  "numba.cuda.codegen", "numba.cuda.core.*", "numba.cuda.cudadecl", "numba.cuda.cudadrv.*",
+  "numba.cuda.cudaimpl", "numba.cuda.dispatcher", "numba.cuda.extending", "numba.cuda.libdevice",
+  "numba.cuda.np.*", "numba.cuda.target", "numba.cuda.typing.*", "llvmlite", "llvmlite.*", "cupy",
+  "cupy.*", "cuda.*",
+]
 
 # A lane operation passes a word where lanes are declared, an int literal where a `u32` is, and
 # returns a word where lanes are, because `device` converts every argument and return.
@@ -123,13 +130,19 @@ bad-return = false
 [tool.ty.environment]
 python-version = "3.14"
 root = ["src", "typing"]
+extra-paths = ["stubs"]
 
 [tool.ty.src]
 include = ["src", "typing"]
 
-# The same untyped reading of the CUDA stack as pyrefly's `replace-imports-with-any` above.
+# The same reading of the CUDA stack as pyrefly's `replace-imports-with-any` above. Here a glob
+# takes only the modules below its own, so `numba.cuda.*` leaves the stubbed `numba.cuda` typed,
+# and `numba` stays resolvable for `from numba import cuda`.
 [tool.ty.analysis]
-replace-imports-with-any = ["numba", "numba.*", "llvmlite", "llvmlite.*", "cupy", "cupy.*", "cuda.*"]
+replace-imports-with-any = [
+  "numba.types", "numba.types.*", "numba.core.*", "numba.np.*", "numba.cuda.*", "llvmlite",
+  "llvmlite.*", "cupy", "cupy.*", "cuda.*",
+]
 
 # Same optional-extra gap as the pyrefly setting above, scoped to the only files that import it.
 [[tool.ty.overrides]]
@@ -225,9 +238,11 @@ exclude = [
 # order of the CUDA intrinsics they mirror (`__funnelshift_r(lo, hi, shift)`, `__dp4a`), and so
 # do the tests' stand-ins for them; a test kernel takes its input and output arrays; a Numba cast
 # takes the types it converts between. A division takes its dividend before its divisor as `//`
-# does, and a copy or a comparison names each array beside its offset and the count last.
+# does, and a copy or a comparison names each array beside its offset and the count last. The
+# numba stubs keep numba-cuda's own parameter order.
 [tool.mcmr.rules."ALL-PARA0001"]
 exclude = [
+  "stubs/**",
   "src/patos/cuda/typed/arithmetic.py",
   "src/patos/cuda/typed/checks.py",
   "src/patos/cuda/typed/lanes.py",
@@ -274,9 +289,15 @@ exclude = [
   "tests/test_cuda_types.py",
 ]
 
-# The same, counted in statements.
+# The same, counted in statements, and the numba stubs, which declare all of numba-cuda's
+# `numba.cuda`.
 [tool.mcmr.rules."ALL-MODU0006"]
-exclude = ["tests/test_cuda_primitives.py", "tests/test_cuda_simd.py", "tests/test_cuda_types.py"]
+exclude = [
+  "stubs/**",
+  "tests/test_cuda_primitives.py",
+  "tests/test_cuda_simd.py",
+  "tests/test_cuda_types.py",
+]
 
 # The house testing policy is maximum coverage from minimum test count: a test is one dense
 # scenario, and its helpers and fakes share the module. Splitting to the ceilings would multiply
@@ -304,9 +325,10 @@ exclude = [
 exclude = ["src/patos/cuda/typed/cxx.py"]
 
 # Each lane operation and each warp reduction is one name over an implementation per type, and
-# the stub type checkers read, kept beside each other.
+# the stub type checkers read, kept beside each other. The numba stubs declare numba-cuda's whole
+# `numba.cuda`.
 [tool.mcmr.rules."ALL-MODU0002"]
-exclude = ["src/patos/cuda/primitives/bits.py", "src/patos/cuda/primitives/warp.py"]
+exclude = ["src/patos/cuda/primitives/bits.py", "src/patos/cuda/primitives/warp.py", "stubs/**"]
 
 # `met` is the rules read over Numba's types, which the tests pin against `meet`, so it stays a
 # module function they import rather than moving into the typing rule that calls it.
@@ -316,6 +338,21 @@ ignore_names = ["met"]
 # The initializer of a namespace package holds its docstring and nothing else.
 [tool.mcmr.rules."PY-MODU0002"]
 exclude = ["src/patos/cuda/__init__.py"]
+
+# The numba stubs type numba-cuda's API as it stands: its fourteen atomics, its names (`all_sync`
+# answers a Boolean), its `shape` tuples and the `bool | None` options that defer to its
+# configuration.
+[tool.mcmr.rules."ALL-CLAS0003"]
+exclude = ["stubs/**"]
+
+[tool.mcmr.rules."PY-COLL0001"]
+exclude = ["stubs/**"]
+
+[tool.mcmr.rules."PY-NAMI0001"]
+exclude = ["stubs/**"]
+
+[tool.mcmr.rules."PY-TYPE0002"]
+exclude = ["stubs/**"]
 
 [tool.pytest.ini_options]
 addopts = "-q -ra --strict-markers"
