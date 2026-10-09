@@ -16,6 +16,7 @@ import builtins
 from typing import NamedTuple
 
 from ..typed import Vector, cuda, device, dispatched, f32, f64, i32, i64, lane, ptx, u8, u32, u64
+from . import integers
 
 # The lane mask naming all 32 lanes of a warp.
 _FULL_WARP = 0xFFFFFFFF
@@ -99,7 +100,7 @@ def _sum_u32(value: u32) -> u32:
 def _sum_shuffled[T: (i64, u64, f32, f64)](value: T) -> T:
     """Each step adds the value of the lane `offset` over, which holds the other half's sum."""
     for offset in (16, 8, 4, 2, 1):
-        value = value + _swapped(value, offset)
+        value = integers.wrapping_add(value, _swapped(value, offset))
     return value
 
 

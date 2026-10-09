@@ -75,6 +75,7 @@ from patos.cuda.typed.declarations import (
     declared,
     named,
 )
+from patos.cuda.typed.reading import Reading as FunctionReading
 
 # Checks, rewrites and typing rules need only the `cuda` extra, as numba-cuda decorates lazily;
 # what uploads or launches needs a device.
@@ -1327,6 +1328,19 @@ def test_take_draws_a_sized_array_field_from_its_role_in_the_workspace(
 
 
 @gpu
+def test_take_under_a_given_role_keeps_two_records_of_one_class_apart() -> None:
+    """Records of one class taken under its own role share buffers, so a caller names another."""
+    workspace = Workspace(cp)
+    first = Tables.take(workspace, slots=4, mask=1, shift=0)
+    second = Tables.take(workspace, role="rewritten", slots=4, mask=1, shift=0)
+    again = Tables.take(workspace, slots=4, mask=1, shift=0)
+
+    assert set(workspace) == {f"{__name__}.Tables.slots", "rewritten.slots"}
+    assert cp.shares_memory(first.slots, again.slots)
+    assert not cp.shares_memory(first.slots, second.slots)
+
+
+@gpu
 def test_device_members_answer_on_the_device_and_leave_the_host_class() -> None:
     """A record's kernel reads a record field through its operators, property and method.
 
@@ -1936,6 +1950,88 @@ def test_a_function_made_in_a_function_reads_the_names_only_its_annotations_name
     )
 
 
+@pytest.mark.parametrize("module_global", [True, False])
+def test_an_annotation_reads_the_class_it_is_written_in_before_the_module(
+    *, module_global: bool
+) -> None:
+    """A method's annotations read its class body before the module's names.
+
+    PEP 649 hands them the body as `__classdict__`: a name there wins over the module's, and is
+    found where the module has none.
+    """
+    namespace = executed(
+        f"""
+        {"Element = i64" if module_global else ""}
+
+        class Holder:
+            Element = u32
+
+            def method(self, x: Element) -> Element:
+                return x
+        """
+    )
+    reading = FunctionReading(namespace.Holder.method, owner=namespace.Holder)
+
+    assert (reading.parameters["x"], reading.returns, reading.issues) == (np.uint32, np.uint32, [])
+
+
+_MADE_IN_A_MODULE = """
+    bump = 1
+
+    def make(step: int):
+        @device
+        def scaled(x: i32) -> i32:
+            return later(x) * bump + step
+
+        return scaled
+
+    scaled = make(2)
+
+    @device
+    def later(x: i32) -> i32:
+        return x + 10
+
+    @device
+    def helper(x: i32) -> i32:
+        return x + 100
+
+    def outer():
+        @device
+        def calls(x: i32) -> i32:
+            return helper(x)
+
+        @device
+        def helper(x: i32) -> i32:
+            return x + 1
+
+        return calls
+
+    calls = outer()
+
+    @kernel
+    def run(out: Vector[i32]) -> None:
+        for item in items(out.size):
+            out[item] = scaled(item) * 1000 + calls(item)
+"""
+
+
+@gpu
+def test_a_function_with_a_closure_reads_the_live_globals_and_the_names_its_scope_binds() -> None:
+    """A closure no longer snapshots the module's globals.
+
+    A helper the module defines further down, and a global rebound before the first compile, are
+    the ones the function reads. A name its scope binds after the function is made is that name,
+    never a global of the same name.
+    """
+    namespace = executed(_MADE_IN_A_MODULE)
+    namespace.later.py_func.__globals__["bump"] = 5
+    out = cp.zeros(4, np.int32)
+    namespace.run[4](out)
+
+    assert out.get().tolist() == [((i + 10) * 5 + 2) * 1000 + i + 1 for i in range(4)]
+    assert namespace.scaled.py_func.__globals__ is namespace.later.py_func.__globals__
+
+
 @pytest.mark.parametrize("name", _IDENTITIES)
 @gpu
 def test_an_identity_helper_gives_the_value_of_the_expression_it_names_in_the_same_ptx(
@@ -2246,6 +2342,19 @@ _MEMBERS = executed(
         out[0] = Bounds(1, 2).holds(1, 2)
 
 
+    @kernel
+    def misnamed(out: Vector[i32]) -> None:
+        out[0] = Bounds(1, 2).holds(1, inside=1)
+
+
+    @kernel
+    def keyworded(out: Vector[i32]) -> None:
+        bounds = Bounds(start=1, end=5)
+        out[0] = bounds.holds(at=3)
+        out[1] = bounds.widened(by=2).length()
+        out[2] = bounds.holds(at=bounds.end)
+
+
     class Sized(NamedTuple):
         size: i32
 
@@ -2313,6 +2422,7 @@ def test_a_named_value_has_methods_and_attributes_in_the_ptx_of_the_loose_scalar
         ("misspelled", r"Unknown attribute 'measure' of type Bounds"),
         ("unheld", r"Bounds\.holds: missing a required argument: 'at'"),
         ("overheld", r"Bounds\.holds: too many positional arguments"),
+        ("misnamed", r"Bounds\.holds: got an unexpected keyword argument 'inside'"),
     ],
 )
 def test_a_call_of_a_method_its_named_value_lacks_or_with_other_arguments_is_refused(
@@ -2321,6 +2431,69 @@ def test_a_call_of_a_method_its_named_value_lacks_or_with_other_arguments_is_ref
     """numba-cuda raises its own error for an unknown attribute and patos Numba's for the rest."""
     with pytest.raises(NumbaError, match=refusal):
         getattr(_MEMBERS, launched)[1](cp.zeros(1, np.int32))
+
+
+@gpu
+def test_a_method_of_a_named_value_takes_its_arguments_by_keyword_as_a_function_does() -> None:
+    """`bounds.holds(at=3)` and `bounds.widened(by=2)` name the parameters of the method."""
+    out = cp.zeros(3, np.int32)
+    _MEMBERS.keyworded[1](out)
+
+    assert out.get().tolist() == [1, 8, 0]
+
+
+@gpu
+def test_a_named_value_reached_only_through_a_local_alias_binds_its_methods() -> None:
+    """`Alias = Bounds` makes `Alias(a, b)` build a `Bounds`, whose methods are then compiled."""
+    namespace = executed(
+        """
+        class Bounds(NamedTuple):
+            start: i32
+            end: i32
+
+            @device
+            def length(self) -> i32:
+                return self.end - self.start
+
+        @device
+        def measured(start: i32, end: i32) -> i32:
+            Alias = Bounds
+            return Alias(start, end).length()
+
+        @kernel
+        def run(out: Vector[i32]) -> None:
+            for item in items(out.size):
+                out[item] = measured(item, 9)
+        """
+    )
+    out = cp.zeros(4, np.int32)
+    namespace.run[4](out)
+
+    assert out.get().tolist() == [9 - item for item in range(4)]
+
+
+def test_a_class_whose_members_fail_to_bind_is_refused_each_time_a_function_names_it() -> None:
+    """A class whose members failed to bind is not marked bound.
+
+    A second function naming it meets the same refusal, not a class whose members are undone.
+    """
+
+    class Broken(NamedTuple):
+        value: i32
+
+        @device
+        def twice(self):
+            return self.value * 2
+
+    def first(broken: Broken) -> i32:
+        return broken.value
+
+    def second(broken: Broken) -> i32:
+        return broken.value
+
+    for function in (first, second):
+        with pytest.raises(AnnotationError, match="the return has no annotation"):
+            device(function)
 
 
 def test_a_named_value_keeps_the_operators_of_a_tuple() -> None:

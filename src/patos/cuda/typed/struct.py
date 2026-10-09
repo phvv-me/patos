@@ -116,39 +116,47 @@ class Struct:
         return cls(**held | changes)
 
     @classmethod
-    def take(cls, workspace: Workspace, *, zeroed: Collection[str] = (), **values: Value) -> Self:
+    def take(
+        cls,
+        workspace: Workspace,
+        *,
+        role: str | None = None,
+        zeroed: Collection[str] = (),
+        **values: Value,
+    ) -> Self:
         """A record whose array fields given as a size are taken from `workspace`.
 
-        Each such field is the buffer of its role, the record's qualified name and the field's,
-        in the dtype it declares, zero-filled when `zeroed` names it; every other field is given
-        as it is.
+        Each such field is the buffer of the role `<role>.<field>`, in the dtype it declares,
+        zero-filled when `zeroed` names it; every other field is given as it is.
+
+        role: the record's qualified name unless given. Two records of one class alive together
+            must be taken under two roles, or they share their buffers.
         """
-        roles = cls._roles()
+        dtypes = cls._dtypes()
         sized = {
             name: int(value)
             for name, value in values.items()
-            if name in roles and isinstance(value, int | np.integer)
+            if name in dtypes and isinstance(value, int | np.integer)
         }
         if stray := set(zeroed) - sized.keys():
             raise TypeError(f"{cls.__name__} zeroes {', '.join(sorted(stray))}, given no size")
+        prefix = role or f"{cls.__module__}.{cls.__qualname__}"
         for name, size in sized.items():
-            if (held := roles[name]) is None:
+            if (dtype := dtypes[name]) is None:
                 raise TypeError(
                     f"{cls.__name__}.{name} declares {named(cls.declarations()[name])}, which has "
                     "no one dtype to take"
                 )
-            role, dtype = held
             taken = workspace.zeros if name in zeroed else workspace.take
-            values[name] = taken(role, size, dtype)
+            values[name] = taken(f"{prefix}.{name}", size, dtype)
         return cls(**values)
 
     @classmethod
     @cache
-    def _roles(cls) -> dict[str, tuple[str, np.dtype] | None]:
-        """The workspace role and dtype of each array field, None for an open element."""
-        prefix = f"{cls.__module__}.{cls.__qualname__}"
+    def _dtypes(cls) -> dict[str, np.dtype | None]:
+        """The dtype of each array field, None for an open element."""
         return {
-            name: (f"{prefix}.{name}", np.dtype(kind.element)) if kind.concrete else None
+            name: np.dtype(kind.element) if kind.concrete else None
             for name, kind in cls.declarations().items()
             if isinstance(kind, ArrayOf)
         }

@@ -65,12 +65,10 @@ def _method(attr: str) -> type[templates.AbstractTemplate]:
         ) -> templates.Signature:
             device, _ = _MEMBERS[self.this.instance_class, attr]
             try:
-                inspect.signature(device.py_func).bind(self.this, *args)
+                bound = inspect.signature(device.py_func).bind(self.this, *args, **kws)
             except TypeError as error:
                 raise TypingError(f"{self.this.instance_class.__name__}.{attr}: {error}") from None
-            if kws:
-                raise TypingError(f"{attr} takes its arguments by position")
-            return typed_call(self.context, device, (self.this, *args)).as_method()
+            return typed_call(self.context, device, bound.args).as_method()
 
     return Method
 

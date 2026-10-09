@@ -15,7 +15,7 @@ from functools import cache
 from typing import NamedTuple, Protocol
 
 from ..typed import Vector, cuda, device, f32, f64, i32, i64, lane, number, u32, u64, warp_in_block
-from . import warp
+from . import integers, warp
 
 _WARP = 32
 _MAX_THREADS = 1024
@@ -70,7 +70,7 @@ def over(threads: int) -> Block:
         _staged(warp.sum(value), partial)
         total = partial[0]
         for index in range(1, warps):
-            total = type(value)(total + partial[index])
+            total = integers.wrapping_add(total, partial[index])
         cuda.syncthreads()
         return total
 

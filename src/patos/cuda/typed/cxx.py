@@ -2,12 +2,13 @@
 sibling for what one PTX block cannot hold, such as CUB's collectives.
 
 One `Cxx` is one translation unit of one library, its prelude and every body declared into it. The
-first kernel calling one of them compiles the unit to LTO IR for the GPU at hand and links it, so
-the call inlines as a device function's does. The compiled unit is cached in the user's cache
-directory under the digest of what decides its bytes (the source, the headers, the compiler and
-every flag it runs with, which holds the architecture), so a host compiles each unit once, and an
-entry whose bytes no longer match the digest recorded beside them is compiled again rather than
-linked.
+first kernel calling one of them compiles the unit to LTO IR for the architecture numba-cuda
+compiles the GPU's kernels for (`sm_90a`, not `sm_90`) and links it, so the call inlines as a
+device function's does. The compiled unit is cached in the user's cache directory under the
+digest of what decides its bytes (the source, the headers, the compiler and every flag it runs
+with, which holds the architecture), so a host compiles each unit once, and an entry whose bytes
+no longer match the digest recorded beside them is compiled again rather than linked. Where the
+cache directory cannot be written, a unit compiles in each process, and the first says so.
 
     cub = Cxx(cccl, "#include <cub/warp/warp_reduce.cuh>", name="cub")
 
@@ -50,12 +51,14 @@ from types import FunctionType
 from cuda.bindings import nvrtc
 from cuda.cccl import get_include_paths
 from cuda.core import Program, ProgramOptions
+from cuda.pathfinder import load_nvidia_dynamic_lib
 from llvmlite import ir
 from numba import cuda, types
 from numba.core.typing import templates
 from numba.cuda import cgutils
 
 from ...bases import FrozenModel
+from .cachedir import stored, user_cache
 from .intrinsics import as_intrinsic, read_stub
 from .lanes import LaneType
 
@@ -82,6 +85,15 @@ class Compiler(StrEnum):
         """What a compiled unit's file ends in: NVRTC writes bare LTO IR, nvcc a fatbin of it."""
         return "ltoir" if self is Compiler.NVRTC else "fatbin"
 
+    @staticmethod
+    def target(arch: int) -> str:
+        """`arch` as numba-cuda targets it: `90a`, not `90`, from Hopper on.
+
+        The architecture-specific instructions begin there, and a unit linked into a kernel is
+        compiled for the kernel's own target.
+        """
+        return f"{arch}{'a' if arch >= 90 else ''}"
+
     def compiled(self, name: str, headers: Headers, source: str, arch: int) -> bytes:
         """The LTO IR of the unit `name` holding `source`, for `sm_<arch>`."""
         match self:
@@ -97,25 +109,27 @@ class Compiler(StrEnum):
             case Compiler.NVRTC:
                 return [flag.decode() for flag in self._program(headers, arch).as_bytes("nvrtc")]
             case Compiler.NVCC:
+                target = self.target(arch)
                 return [
                     "-std=c++17", "-rdc=true", "-O3", "-fatbin", "--extended-lambda",
-                    f"-gencode=arch=compute_{arch},code=lto_{arch}",
+                    f"-gencode=arch=compute_{target},code=lto_{target}",
                     *(f"-D{define}" for define in headers.defines),
                     *(f"-I{path}" for path in headers.include),
                 ]  # fmt: skip
 
     def identity(self) -> str:
-        """The compiler's version, or nvcc's binary by path, size and time.
+        """The compiler's binary by path, size and time, and NVRTC's version too.
 
-        Either moves with any toolkit change, and neither runs a subprocess on a cached path.
+        Either moves with any toolkit change, patch releases included, which the version's major
+        and minor miss, and neither runs a subprocess on a cached path.
         """
         match self:
             case Compiler.NVRTC:
                 _, major, minor = nvrtc.nvrtcVersion()
-                return f"nvrtc {major}.{minor}"
+                found = Path(load_nvidia_dynamic_lib("nvrtc").abs_path)
+                return f"nvrtc {major}.{minor} {self._stamp(found)}"
             case Compiler.NVCC:
-                found = _NVCC.resolve()
-                return f"nvcc {found} {found.stat().st_size} {found.stat().st_mtime_ns}"
+                return f"nvcc {self._stamp(_NVCC.resolve())}"
 
     @staticmethod
     def _nvcc(name: str, flags: list[str], source: str) -> bytes:
@@ -143,10 +157,16 @@ class Compiler(StrEnum):
     @staticmethod
     def _program(headers: Headers, arch: int, name: str = "") -> ProgramOptions:
         return ProgramOptions(
-            name=name, arch=f"sm_{arch}", std="c++17", relocatable_device_code=True,
+            name=name, arch=f"sm_{Compiler.target(arch)}", std="c++17",
+            relocatable_device_code=True,
             link_time_optimization=True, define_macro=headers.defines,
             include_path=[str(path) for path in headers.include],
         )  # fmt: skip
+
+    @staticmethod
+    def _stamp(path: Path) -> str:
+        """A binary or library by path, size and time."""
+        return f"{path} {path.stat().st_size} {path.stat().st_mtime_ns}"
 
 
 class Headers(FrozenModel):
@@ -211,7 +231,7 @@ class Pinned(FrozenModel):
 
     def include(self) -> Path:
         """The library's include directory in the user's cache, fetched when missing."""
-        path = _cache() / "headers" / f"{self.name}-{self.commit[:12]}"
+        path = user_cache() / "headers" / f"{self.name}-{self.commit[:12]}"
         if not path.is_dir():
             self._fetch(path)
         _checked(tree_digest(path), registered=self.headers_sha256, source=path)
@@ -308,12 +328,14 @@ class Cxx:
     def _cached(self, arch: int) -> Path:
         """The cache entry of the unit for `sm_<arch>`, compiled when missing or damaged."""
         headers, source = self._headers(), "\n".join(self._parts)
-        path = self._entry(headers, source, arch)
+        compiler, path = headers.compiler, self._entry(headers, source, arch)
         if not self._is_intact(path):
-            data = headers.compiler.compiled(self.name, headers, source, arch)
-            logger.info("compiled %s for sm_%d with %s", self.name, arch, headers.compiler)
-            _written(path, data)
-            _written(path.with_suffix(".sha256"), hashlib.sha256(data).hexdigest().encode())
+            data = compiler.compiled(self.name, headers, source, arch)
+            logger.info(
+                "compiled %s for sm_%s with %s", self.name, compiler.target(arch), compiler
+            )
+            stored(path, data)
+            stored(path.with_suffix(".sha256"), hashlib.sha256(data).hexdigest().encode())
         return path
 
     def _called(
@@ -341,7 +363,8 @@ class Cxx:
         decided = [source, headers.name, headers.digest, compiler.identity()]
         decided += compiler.flags(headers, arch)
         key = hashlib.sha256("\0".join(decided).encode()).hexdigest()[:32]
-        return _cache() / "cxx" / f"{self.name}-sm{arch}-{key}.{compiler.suffix}"
+        entry = f"{self.name}-sm{compiler.target(arch)}-{key}.{compiler.suffix}"
+        return user_cache() / "cxx" / entry
 
 
 # The environment's own nvcc, which the `cuda-nvcc` package puts beside its Python.
@@ -349,18 +372,5 @@ _NVCC = Path(sys.prefix, "bin", "nvcc")
 _REGISTRY = Path(__file__).with_name("libraries.toml")
 
 
-def _cache() -> Path:
-    """patos's folder in the user's cache directory."""
-    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache", "patos")
-
-
 def _spelled(kind: types.Type) -> str:
     return "cuda::std::uint32_t" if isinstance(kind, LaneType) else _SPELLED[kind]
-
-
-def _written(path: Path, data: bytes) -> None:
-    """Write `data` to `path` whole: another process reads either nothing or every byte."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".partial", delete=False) as partial:
-        partial.write(data)
-    Path(partial.name).replace(path)

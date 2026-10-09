@@ -20,7 +20,8 @@ from .declarations import (
     is_integer,
     is_scalar,
 )
-from .reading import Reading, resolved
+from .reading import Reading
+from .scopes import resolved
 
 # One way a local gets its value: a reading of what is assigned, given the other locals.
 type _Origin = Callable[[dict[str, Declared]], Declared]

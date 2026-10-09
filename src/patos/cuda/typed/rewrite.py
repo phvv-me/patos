@@ -26,6 +26,7 @@ from ..scalars import Lanes, i32, i64
 from .declarations import Returns, Signature
 from .items import items_through
 from .reading import Reading, is_convertible
+from .scopes import closure_of, scoped
 
 
 class Helper(Protocol):
@@ -73,15 +74,19 @@ class Rewrite:
         """
         original = self.reading.function
         # The module's own globals, updated in place, so a name the module defines later resolves.
-        namespace = self.reading.namespace
-        namespace.update(_patos_numpy=np, _patos_scalars=scalars)
-        if self.items is not None:
-            namespace.update(self.items.bindings())
-        rebuilt = FunctionType(self._code(), namespace, original.__name__)
+        namespace = original.__globals__
+        bindings = {} if self.items is None else self.items.bindings()
+        namespace.update(_patos_numpy=np, _patos_scalars=scalars, **bindings)
+        code = self._code()
+        rebuilt = FunctionType(
+            code, namespace, original.__name__, None, closure_of(original, code)
+        )
         rebuilt.__doc__ = original.__doc__
         rebuilt.__qualname__ = original.__qualname__
         rebuilt.__dict__["device_signature"] = Signature(
-            parameters=tuple(self.reading.parameters.values()), returns=self.reading.returns
+            parameters=tuple(self.reading.parameters.values()),
+            returns=self.reading.returns,
+            variables=self.reading.variables,
         )
         return rebuilt
 
@@ -91,18 +96,10 @@ class Rewrite:
         if self.items is not None:
             definition = _ItemLoops(self.reading, self.items).visit(definition)
             self.reading.raise_issues()
-        definition.decorator_list = []
-        definition.type_params = []
-        definition.returns = None
+        definition.decorator_list, definition.type_params, definition.returns = [], [], None
         for argument in definition.args.args:
             argument.annotation = None
-        ast.fix_missing_locations(self.reading.tree)
-        module = compile(self.reading.tree, self.reading.function.__code__.co_filename, "exec")
-        return next(
-            constant
-            for constant in module.co_consts
-            if getattr(constant, "co_name", None) == definition.name
-        )
+        return scoped(definition, self.reading.function)
 
 
 class _Conversions(ast.NodeTransformer):

@@ -504,3 +504,95 @@ def test_ceildiv_by_a_literal_divides_at_the_type_of_the_value(
     assert [part.get().tolist() for part in held] == [
         [-(-value // 32) for value in values] for values in (narrow, wide)
     ]
+
+
+def nsw_count(launched: Kernel, kind: type[np.generic], operation: str) -> int:
+    """How many `operation`s the LLVM IR of `launched`, compiled for `kind`, marks `nsw`.
+
+    Numba marks a signed add or multiply as never overflowing, which makes overflow undefined.
+    """
+    compiled = next(
+        found for found in launched.dispatcher.overloads if as_dtype(found[0].dtype) == kind
+    )
+    return len(re.findall(rf"= {operation} nsw", launched.dispatcher.inspect_llvm(compiled)))
+
+
+def wrapped(total: int) -> int:
+    """`total` as a signed 64-bit integer holds it."""
+    return (total + 2**63) % 2**64 - 2**63
+
+
+def summed_at_the_top(scope: str, kind: type[np.integer]) -> tuple[Kernel, list[int]]:
+    """The sum kernel of a warp or of a block of 64, and what it gave its first thread.
+
+    The warp sums 32 values of the top of `kind`. The block sums two rows of 64, the second one
+    below the top.
+    """
+    top = int(np.iinfo(kind).max)
+    if scope == "warp":
+        launched, table, rows = warp_reducing("sum"), [[top] * 32, [0] * 32], [1]
+    else:
+        launched = block_reducing("sum", 64)
+        table, rows = [[top] * 64, [top - 1] * 64, [0] * 64, [0] * 64], [2, 3]
+    held = cp.asarray(np.array(table, kind))
+    launched[32 if scope == "warp" else 1](held)
+    return launched, [int(held[row, 0]) for row in rows]
+
+
+@pytest.mark.parametrize("scope", ["warp", "block"])
+def test_a_signed_64_bit_sum_wraps_and_marks_no_add_never_to_overflow(scope: str) -> None:
+    """Values at the top of `i64` sum to what the integer wraps to, with no `add nsw`.
+
+    Numba marks a signed add as never overflowing, which leaves the wrapped sum to the optimizer;
+    the sum adds through `u64`, whose adds it marks nothing, which is the control.
+    """
+    launched, got = summed_at_the_top(scope, np.int64)
+    summed_at_the_top(scope, np.uint64)
+
+    top, width = 2**63 - 1, 32 if scope == "warp" else 64
+    assert got == [wrapped(top * width), wrapped((top - 1) * width)][: len(got)]
+    assert nsw_count(launched, np.int64, "add") == nsw_count(launched, np.uint64, "add")
+
+
+def test_the_sum_of_two_i32_operands_is_an_i64_until_it_is_converted_back() -> None:
+    """Numba types `a + b` of two `i32`s as an `i64`, so `warp.sum(a + b)` sums in 64 bits.
+
+    That is documented, and `warp.sum(i32(a + b))` is the sum in 32.
+    """
+
+    @kernel(threads=32)
+    def widening(left: Vector[i32], right: Vector[i32], held: Vector[i64]) -> None:
+        for lane_item in items(left.size):
+            held[0] = warp.sum(left[lane_item] + right[lane_item])
+            held[1] = warp.sum(i32(left[lane_item] + right[lane_item]))
+
+    held = cp.zeros(2, np.int64)
+    widening[32](cp.full(32, 2**31 - 1, np.int32), cp.ones(32, np.int32), held)
+
+    assert held.get().tolist() == [2**36, 0]
+
+
+@pytest.mark.parametrize("kind", [np.int32, np.uint32, np.int64, np.uint64])
+def test_ceildiv_rounds_up_at_the_edges_of_every_type(*, kind: type[np.integer]) -> None:
+    """Each edge value over each edge divisor, `i64` min included, against Python's integers."""
+    info = np.iinfo(kind)
+    values = [info.min, info.min + 1, -1, 0, 1, info.max - 1, info.max]
+    pairs = [(v, d) for v in values for d in (1, 2, 3, 7, info.max) if v >= info.min]
+    columns = [[v for v, _ in pairs], [d for _, d in pairs], [0] * len(pairs)]
+    table = cp.asarray(np.array(columns, kind))
+    dividing[len(pairs)](table)
+
+    assert table[2].get().tolist() == [-(-v // d) for v, d in pairs]
+
+
+def test_the_signed_64_bit_ceildiv_multiplies_nothing_that_may_overflow() -> None:
+    """`quotient * divisor` leaves `i64` for the minimum, where Numba's `mul nsw` is undefined.
+
+    The remainder decides there, so the signed kernel marks no more multiplies than the unsigned
+    one, whose product never passes its value.
+    """
+    table = cp.asarray(np.array([[0], [1], [0]], np.int64))
+    dividing[1](table)
+    dividing[1](table.astype(np.uint64))
+
+    assert nsw_count(dividing, np.int64, "mul") == nsw_count(dividing, np.uint64, "mul")

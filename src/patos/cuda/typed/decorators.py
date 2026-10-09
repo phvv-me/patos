@@ -36,8 +36,10 @@ if TYPE_CHECKING:
 
 # The block size each compiled `threads` device function was made for, by the library it became.
 _MADE_FOR: WeakKeyDictionary[CUDACodeLibrary, int] = WeakKeyDictionary()
-# The named value classes whose device members are compiled, or compiling.
+# The named value classes whose device members are compiled, and those compiling, which the
+# members' own annotations may name again. A class whose members failed is neither.
 _BOUND: WeakSet[type] = WeakSet()
+_BINDING: WeakSet[type] = WeakSet()
 
 
 # `device` returns the numba dispatcher typed as the function it compiles, so a device function
@@ -84,9 +86,13 @@ def read_bound(function: FunctionType, *, kernel: bool, owner: type | None = Non
     reading = read(function, kernel=kernel, owner=owner)
     built = [reading.constructed(node) for node in reading.walk() if isinstance(node, ast.Call)]
     classes = set(_named_classes([*reading.declared.values(), reading.returns, *built]))
-    for cls in classes - set(_BOUND):
+    for cls in classes - set(_BOUND) - set(_BINDING):
+        _BINDING.add(cls)
+        try:
+            bind_members(cls)
+        finally:
+            _BINDING.discard(cls)
         _BOUND.add(cls)
-        bind_members(cls)
     return reading
 
 

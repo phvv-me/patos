@@ -6,7 +6,7 @@ import ast
 import inspect
 import textwrap
 from collections.abc import Callable, Iterator, Mapping, MutableMapping
-from types import CellType, FunctionType, NoneType
+from types import FunctionType, NoneType
 from typing import TypeIs, TypeVar
 
 import numpy as np
@@ -23,12 +23,9 @@ from .declarations import (
     declared,
     is_scalar,
     named,
-    unaliased,
 )
 from .items import items, items_through
-
-# A cell no value is stored in yet; cells compare by what they hold, an empty one equal to it.
-_EMPTY = CellType()
+from .scopes import annotation_scope, body_scope, resolved
 
 
 class AnnotationError(TypeError):
@@ -46,17 +43,10 @@ class Reading:
     def __init__(
         self, function: FunctionType, *, kernel: bool = False, owner: type | None = None
     ) -> None:
-        self.function = function
-        self.kernel = kernel
-        self.owner = owner
-        # Annotations also read the record a member is defined in, before the module names it, and
-        # what `__annotate__` closes over (PEP 649): a name only an annotation uses lives there.
-        annotate = function.__annotate__
-        self.members = (_cells(annotate) if isinstance(annotate, FunctionType) else {}) | (
-            {} if owner is None else {owner.__name__: owner}
-        )
-        self.tree, self.definition = self._parsed(function)
-        self.namespace = self._namespace(function)
+        self.function, self.kernel, self.owner = function, kernel, owner
+        self.members = annotation_scope(function, owner)
+        self.definition = self._parsed(function)
+        self.namespace = body_scope(function, self.walk(), self.definition.args.args)
         # Device code is generic over type variables only, its own and its record's.
         self.type_params = tuple(
             parameter
@@ -69,6 +59,7 @@ class Reading:
         }
         self.returns = self._returns(kernel=kernel)
         self.declared = self._declarations()
+        self.variables = self._variables()
 
     def callee(self, node: ast.expr) -> Signature | None:
         """The signature of the device function `node` calls, or of the named value it builds."""
@@ -157,36 +148,18 @@ class Reading:
             )
 
     @staticmethod
-    def _namespace(function: FunctionType) -> dict[str, Evaluated]:
-        """The globals of `function`, with the cells it closes over when it has any.
-
-        Without them it is the module's own globals, so a name the module defines later resolves.
-        """
-        cells = _cells(function)
-        return {**function.__globals__, **cells} if cells else function.__globals__
-
-    @staticmethod
-    def _parsed(function: FunctionType) -> tuple[ast.Module, ast.FunctionDef]:
-        """The source of `function` as a tree numbered like its file, and its definition."""
+    def _parsed(function: FunctionType) -> ast.FunctionDef:
+        """The definition of `function` as a tree numbered like its file."""
         tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
         ast.increment_lineno(tree, function.__code__.co_firstlineno - 1)
         definition = tree.body[0]
         if not isinstance(definition, ast.FunctionDef):
             raise AnnotationError(f"{function.__qualname__} is not a plain function definition")
-        return tree, definition
+        return definition
 
     def _annotation(self, node: ast.expr) -> Declared:
-        """Return what an annotation declares, evaluated where the function is defined.
-
-        Python keeps no annotation of a local, so every annotation is read from the source alike.
-        A type parameter declares None.
-        """
-        try:
-            value = annotationlib.ForwardRef(ast.unparse(node)).evaluate(
-                globals=self.namespace, locals=self.members, type_params=self.type_params
-            )
-        except NameError:
-            value = None
+        """Return what an annotation declares, where a type parameter declares None."""
+        value = self._evaluated(node)
         if isinstance(value, TypeVar):
             return None
         kind = declared(value)
@@ -230,6 +203,20 @@ class Reading:
             )
         declarations.setdefault(name, kind)
 
+    def _evaluated(self, node: ast.expr) -> Evaluated:
+        """What an annotation evaluates to where the function is defined, None for a name unbound.
+
+        Python keeps no annotation of a local, so every annotation is read from the source alike.
+        """
+        try:
+            return annotationlib.ForwardRef(ast.unparse(node)).evaluate(
+                globals=self.function.__globals__,
+                locals=self.members,
+                type_params=self.type_params,
+            )
+        except NameError:
+            return None
+
     def _parameter(self, argument: ast.arg) -> Declared:
         if argument.annotation is None and self.owner is not None and argument.arg == "self":
             return declared(self.owner)
@@ -257,32 +244,17 @@ class Reading:
             self.issue(node, "a device function returns no array")
         return kind
 
+    def _variables(self) -> tuple[tuple[int, TypeVar], ...]:
+        """The type parameter each parameter and the return declare, by index."""
+        nodes = [argument.annotation for argument in self.definition.args.args]
+        nodes.append(self.definition.returns)
+        evaluated = ((index, self._evaluated(node)) for index, node in enumerate(nodes) if node)
+        return tuple((index, kind) for index, kind in evaluated if isinstance(kind, TypeVar))
+
 
 def is_convertible(kind: Subject) -> TypeIs[type[np.number] | Lanes]:
     """Whether a value converts to `kind` by a cast: a scalar type or packed lanes."""
     return is_scalar(kind) or isinstance(kind, Lanes)
-
-
-def _cells(function: FunctionType) -> dict[str, Evaluated]:
-    """What `function` closes over, by name; a cell its scope has not filled yet is left out."""
-    if not function.__closure__:
-        return {}
-    cells = zip(function.__code__.co_freevars, function.__closure__, strict=True)
-    return {name: cell.cell_contents for name, cell in cells if cell != _EMPTY}
-
-
-def resolved(node: ast.expr, namespace: dict[str, Evaluated]) -> Evaluated:
-    """Return what a plain or dotted name refers to in `namespace`, through any type alias.
-
-    Anything else resolves to None.
-    """
-    value: Evaluated = None
-    if isinstance(node, ast.Name):
-        value = namespace.get(node.id)
-    elif isinstance(node, ast.Attribute):
-        owner = resolved(node.value, namespace)
-        value = getattr(owner, node.attr, None) if owner is not None else None
-    return unaliased(value)
 
 
 def _has_array(declared: Returns) -> bool:

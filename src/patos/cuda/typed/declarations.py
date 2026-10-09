@@ -112,10 +112,15 @@ class NamedValue(FrozenModel):
 
 @final
 class Signature(FrozenModel):
-    """What a compiled device function declares, for its callers' checks."""
+    """What a compiled device function declares, for its callers' checks.
+
+    variables: the type parameter each generic parameter declares, by its index, the return's
+        being `len(parameters)`; such a parameter declares None.
+    """
 
     parameters: Runtime[tuple[Declared, ...]]
     returns: Runtime[Returns]
+    variables: Runtime[tuple[tuple[int, TypeVar], ...]] = ()
 
 
 def is_scalar(kind: Subject) -> TypeIs[type[np.number]]:
