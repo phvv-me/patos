@@ -2,7 +2,7 @@ import cupy as cp
 import numpy as np
 import pytest
 
-from patos.cuda.graphs import Arena, Captured, Graphs, Unrecordable, branch
+from patos.cuda.graphs import Arena, Captured, Graphs, Unrecordable, branch, signal
 
 _SIZES = (1, 513, 40_000_000, 100)
 
@@ -142,3 +142,46 @@ def test_the_oldest_recording_is_dropped_past_the_limit(lane) -> None:
     for key in "abc":
         store.capture(key, lambda: cp.zeros(4, dtype=cp.int32) + 1, stream=lane)
     assert [store.get(key) is not None for key in "abc"] == [False, True, True]
+
+
+def signalled(seen: np.ndarray, event: cp.cuda.Event, stream: cp.cuda.Stream) -> cp.ndarray:
+    """Write seven, copy it to the host words `seen`, signal `event`, then keep the device busy.
+
+    Returns the seven, an `int32` array with shape `[1]`.
+    """
+    busy = cp.ones(1 << 22, dtype=cp.int32)
+    value = cp.full(1, 7, dtype=cp.int32)
+    runtime = cp.cuda.runtime
+    runtime.memcpyAsync(
+        seen.ctypes.data, value.data.ptr, 4, runtime.memcpyDeviceToHost, stream.ptr
+    )
+    signal(cp, event)
+    for _ in range(400):
+        cp.cumsum(busy, out=busy)
+    return value
+
+
+@pytest.fixture
+def waits() -> tuple[np.ndarray, cp.cuda.Event, cp.cuda.Event]:
+    """A pinned host word, the event a replay signals and the event after the replay.
+
+    The word is an `int32` array with shape `[1]`. The signal event is also signalled once
+    outside a recording, where a signal is the plain record.
+    """
+    memory = cp.cuda.alloc_pinned_memory(4)
+    event, tail = (cp.cuda.Event(disable_timing=True) for _ in range(2))
+    signal(cp, event)
+    event.synchronize()
+    return np.frombuffer(memory, dtype=np.int32, count=1), event, tail
+
+
+def test_the_host_waits_for_a_signal_while_the_rest_of_a_replay_runs(store, lane, waits) -> None:
+    seen, event, tail = waits
+    captured = store.capture("signal", lambda: signalled(seen, event, lane), stream=lane)
+    for _ in range(2):
+        seen[0] = 0
+        store.launch(captured, lane)
+        tail.record(lane)
+        event.synchronize()
+        assert (seen[0], tail.done) == (7, False)
+        lane.synchronize()
