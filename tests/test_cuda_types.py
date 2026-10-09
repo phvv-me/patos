@@ -1499,7 +1499,7 @@ def test_the_hash_records_answer_on_the_device_what_the_host_built_them_from(
     flags = np.zeros(1024, dtype=np.bool_)
     flags[[key & 1023 for key in entries]] = True
     found = cp.zeros((len(keys), 3), np.int64)
-    table, members = PairTable.build(list(entries.items())), Filter.build(entries)
+    table, members = PairTable.build(entries), Filter.build(entries)
     looked_up[len(keys)](table, members, Bitmap.pack(flags), cp.asarray(keys), found)
 
     rows = found.get()

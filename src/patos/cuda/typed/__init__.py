@@ -34,6 +34,8 @@ from ..scalars import (
     Constant,
     Matrix,
     Vector,
+    f32,
+    f64,
     i8x4,
     i16,
     i16x2,
@@ -48,7 +50,7 @@ from ..scalars import (
     u64,
     unsigned,
 )
-from .cxx import Compiler, Cxx, Headers, cccl
+from .cxx import Compiler, Cxx, Headers, Pinned, cccl, cuco, tree_digest
 from .decorators import device
 from .identity import (
     block_index,
@@ -67,8 +69,8 @@ from .struct import Struct
 
 __all__ = [
     "AnnotationError", "Compiler", "Constant", "Cxx", "Headers", "Kernel", "Matrix", "Per",
-    "Struct", "Vector", "block_index", "cccl", "cuda", "device", "dispatched", "i8x4", "i16",
-    "i16x2", "i32", "i64", "items", "items_through", "kernel", "lane", "number", "ptx",
-    "thread_in_block", "thread_index", "u8", "u8x4", "u16", "u16x2", "u32", "u64", "unsigned",
-    "warp_in_block", "warp_index",
+    "Pinned", "Struct", "Vector", "block_index", "cccl", "cuco", "cuda", "device", "dispatched",
+    "f32", "f64", "i8x4", "i16", "i16x2", "i32", "i64", "items", "items_through", "kernel", "lane", "number",
+    "ptx", "thread_in_block", "thread_index", "tree_digest", "u8", "u8x4", "u16", "u16x2", "u32",
+    "u64", "unsigned", "warp_in_block", "warp_index",
 ]  # fmt: skip

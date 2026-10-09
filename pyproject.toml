@@ -299,9 +299,11 @@ exclude = ["tests/test_cuda_types.py"]
 # the declaration forms sit together, an error beside the reading that raises it, the AST pass
 # beside the rewrite driving it, and the record metaclass beside its one base. A C++ unit sits
 # beside its compiler and headers, a lane type beside its model and the store it types, and a
-# numeric declaration beside the protocol it types.
+# numeric declaration beside the protocol it types. The hash records share one hash and one cuco
+# unit.
 [tool.mcmr.rules."ALL-MODU0005"]
 exclude = [
+  "src/patos/cuda/primitives/hash.py",
   "src/patos/cuda/runtime/memory.py",
   "src/patos/cuda/runtime/streams.py",
   "src/patos/cuda/scalars.py",

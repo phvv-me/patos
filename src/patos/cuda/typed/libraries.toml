@@ -1,0 +1,9 @@
+# Header libraries a `Cxx` unit compiles against that no package carries, each pinned to one
+# commit: its GitHub archive's SHA-256, and the digest of its `include` folder (`tree_digest`).
+# A host fetches each into its cache on first use and refuses bytes these do not match.
+
+[cuco]
+repository = "https://github.com/NVIDIA/cuCollections"
+commit = "30f40c63ce595acc7f4317aacadfb719c70e8241"
+archive_sha256 = "efb0215489ac572dff7ce712e8edfdd75439ef7863812b05954ebcc1c0c0f224"
+headers_sha256 = "53448c89dc62f6cc58e4a8b0a41310f038d9100d99d250d889d3579f3efdf5e7"

@@ -1,7 +1,13 @@
-"""C++ from a header library behind an annotated stub: CUB's warp sum, inlined and cached."""
+"""C++ from a header library behind an annotated stub: CUB's warp sum, inlined and cached, and a
+library pinned by commit, fetched once and refused when its bytes differ."""
 
+import gzip
+import hashlib
+import io
 import logging
 import re
+import tarfile
+import urllib.request
 from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
@@ -16,11 +22,13 @@ from patos.cuda.typed import (
     Cxx,
     Headers,
     Kernel,
+    Pinned,
     Vector,
     cccl,
     i32,
     kernel,
     thread_index,
+    tree_digest,
 )
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
@@ -159,3 +167,84 @@ def test_a_damaged_entry_compiles_again_and_a_late_body_is_refused(
 def late(value: i32) -> i32:
     """A stub its unit receives after compiling."""
     raise NotImplementedError
+
+
+_HEADER = b"#define ONE 1\n"
+
+
+def archived(header: bytes) -> bytes:
+    """Return a GitHub archive of one commit, the same bytes on every call.
+
+    Its top folder holds `include/lib/one.h` and a README.
+    """
+    buffer = io.BytesIO()
+    with (
+        gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as packed,
+        tarfile.open(fileobj=packed, mode="w") as archive,
+    ):
+        for name, data in (("include/lib/one.h", header), ("README.md", b"lib\n")):
+            member = tarfile.TarInfo(f"lib-0123/{name}")
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+@pytest.fixture
+def served(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The repository host answering every download with `archived(_HEADER)`; the URLs asked."""
+    asked: list[str] = []
+
+    def download(url: str, **_: float) -> io.BytesIO:
+        asked.append(url)
+        return io.BytesIO(archived(_HEADER))
+
+    monkeypatch.setattr(urllib.request, "urlopen", download)
+    return asked
+
+
+def pinned(tmp_path: Path, *, archive: bytes) -> Pinned:
+    """`lib` pinned to the digests of `archive` and of a header tree holding `_HEADER`."""
+    tree = tmp_path / "tree" / "lib"
+    tree.mkdir(parents=True)
+    (tree / "one.h").write_bytes(_HEADER)
+    return Pinned(
+        name="lib",
+        repository="https://example.org/lib",
+        commit="0123456789abcdef",
+        archive_sha256=hashlib.sha256(archive).hexdigest(),
+        headers_sha256=tree_digest(tree.parent),
+    )
+
+
+def test_a_pinned_library_is_fetched_once_and_its_headers_checked_each_time(
+    cache: Path, served: list[str], tmp_path: Path
+) -> None:
+    """The include folder lands in the user's cache whole; a header edited there is refused."""
+    library = pinned(tmp_path, archive=archived(_HEADER))
+    include = library.include()
+
+    assert library.include() == include == cache.parent / "headers" / "lib-0123456789ab"
+    assert served == ["https://example.org/lib/archive/0123456789abcdef.tar.gz"]
+    assert (include / "lib" / "one.h").read_bytes() == _HEADER
+    (include / "lib" / "one.h").write_bytes(b"#define ONE 2\n")
+    with pytest.raises(RuntimeError, match="hashes"):
+        library.include()
+
+
+@pytest.mark.usefixtures("served")
+def test_an_archive_unlike_its_registered_digest_is_refused_and_leaves_nothing(
+    cache: Path, tmp_path: Path
+) -> None:
+    library = pinned(tmp_path, archive=archived(b"#define ONE 3\n"))
+
+    with pytest.raises(RuntimeError, match="registers"):
+        library.include()
+    assert not (cache.parent / "headers" / "lib-0123456789ab").exists()
+
+
+def test_cuco_is_registered_by_commit_and_digests() -> None:
+    cuco = Pinned.registered("cuco")
+
+    assert cuco.repository == "https://github.com/NVIDIA/cuCollections"
+    assert len(cuco.commit) == 40
+    assert len(cuco.archive_sha256) == len(cuco.headers_sha256) == 64

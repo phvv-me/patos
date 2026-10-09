@@ -23,19 +23,27 @@ linked.
 A stub's parameters are scalars or lanes, its return one of these or None. NVRTC compiles a unit
 in the process; a library whose headers reach host-only code declares `Compiler.NVCC`, and the
 environment's nvcc compiles it instead.
+
+CCCL comes from its wheel. A library with no package, such as cuCollections (`cuco`), is pinned
+to one commit in `libraries.toml` and fetched into the user's cache on its first compile.
 """
 
 import hashlib
 import importlib.metadata
 import inspect
+import io
 import logging
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
+import tomllib
+import urllib.request
 from collections.abc import Callable
+from contextlib import suppress
 from enum import StrEnum, auto
-from functools import partial
+from functools import cache, partial
 from pathlib import Path
 from types import FunctionType
 
@@ -90,7 +98,7 @@ class Compiler(StrEnum):
                 return [flag.decode() for flag in self._program(headers, arch).as_bytes("nvrtc")]
             case Compiler.NVCC:
                 return [
-                    "-std=c++17", "-rdc=true", "-O3", "-fatbin",
+                    "-std=c++17", "-rdc=true", "-O3", "-fatbin", "--extended-lambda",
                     f"-gencode=arch=compute_{arch},code=lto_{arch}",
                     *(f"-D{define}" for define in headers.defines),
                     *(f"-I{path}" for path in headers.include),
@@ -166,6 +174,85 @@ def cccl() -> Headers:
         include=[Path(get_include_paths().libcudacxx)],
         digest=hashlib.sha256(record.encode()).hexdigest(),
     )
+
+
+@cache
+def cuco() -> Headers:
+    """cuCollections at the commit `libraries.toml` pins, over CCCL from its wheel.
+
+    nvcc compiles it, since its refs reach host-only headers NVRTC refuses (cuCollections#695).
+    """
+    pinned, base = Pinned.registered("cuco"), cccl()
+    return Headers(
+        name="cuco",
+        include=[pinned.include(), *base.include],
+        digest=hashlib.sha256(f"{pinned.headers_sha256}\0{base.digest}".encode()).hexdigest(),
+        compiler=Compiler.NVCC,
+    )
+
+
+class Pinned(FrozenModel):
+    """A header library pinned to one commit of its repository, as `libraries.toml` registers it.
+
+    The archive is fetched into the user's cache on first use and refused unless it hashes as
+    registered; the headers are hashed again in each process that compiles against them, so an
+    edited or truncated copy is refused rather than compiled.
+    """
+
+    name: str
+    repository: str
+    commit: str
+    archive_sha256: str
+    headers_sha256: str
+
+    @classmethod
+    def registered(cls, name: str) -> Pinned:
+        return cls(name=name, **tomllib.loads(_REGISTRY.read_text())[name])
+
+    def include(self) -> Path:
+        """The library's include directory in the user's cache, fetched when missing."""
+        path = _cache() / "headers" / f"{self.name}-{self.commit[:12]}"
+        if not path.is_dir():
+            self._fetch(path)
+        _checked(tree_digest(path), registered=self.headers_sha256, source=path)
+        return path
+
+    def _fetch(self, path: Path) -> None:
+        """Unpack the archive's `include` into `path` whole.
+
+        A copy another process placed first stays, and the digest check after any other failed
+        rename refuses the missing folder.
+        """
+        url = f"{self.repository}/archive/{self.commit}.tar.gz"
+        logger.info("fetching %s", url)
+        with urllib.request.urlopen(url, timeout=120) as response:
+            archive = response.read()
+        _checked(hashlib.sha256(archive).hexdigest(), registered=self.archive_sha256, source=url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=path.parent) as folder:
+            with tarfile.open(fileobj=io.BytesIO(archive)) as unpacked:
+                unpacked.extractall(folder, filter="data")
+            (top,) = Path(folder).iterdir()
+            with suppress(OSError):
+                (top / "include").rename(path)
+
+
+def tree_digest(root: Path) -> str:
+    """The SHA-256 of every file under `root`: its relative path, its size and its bytes."""
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            data = path.read_bytes()
+            digest.update(f"{path.relative_to(root).as_posix()}\0{len(data)}\0".encode() + data)
+    return digest.hexdigest()
+
+
+def _checked(found: str, *, registered: str, source: Path | str) -> None:
+    if found != registered:
+        raise RuntimeError(
+            f"{source} hashes {found}, and {_REGISTRY.name} registers {registered}; delete a "
+            "cached copy to fetch it again"
+        )
 
 
 class Cxx:
@@ -254,12 +341,17 @@ class Cxx:
         decided = [source, headers.name, headers.digest, compiler.identity()]
         decided += compiler.flags(headers, arch)
         key = hashlib.sha256("\0".join(decided).encode()).hexdigest()[:32]
-        root = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
-        return Path(root, "patos", "cxx", f"{self.name}-sm{arch}-{key}.{compiler.suffix}")
+        return _cache() / "cxx" / f"{self.name}-sm{arch}-{key}.{compiler.suffix}"
 
 
 # The environment's own nvcc, which the `cuda-nvcc` package puts beside its Python.
 _NVCC = Path(sys.prefix, "bin", "nvcc")
+_REGISTRY = Path(__file__).with_name("libraries.toml")
+
+
+def _cache() -> Path:
+    """patos's folder in the user's cache directory."""
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache", "patos")
 
 
 def _spelled(kind: types.Type) -> str:
