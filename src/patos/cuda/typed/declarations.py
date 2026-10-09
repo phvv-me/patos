@@ -1,15 +1,24 @@
 """What an annotation declares, read through `type` aliases at every level.
 
-A declaration is a scalar type, `bool`, an array (`u8[int]`), a record (a `Struct`), or a tuple
-of these. The readings of a function also know an int literal, which takes the type of the
-integer it meets.
+A declaration is a scalar type, `bool`, an array (`u8[int]`), a record (a `Struct`), a named value
+(a `typing.NamedTuple` of declarations), or a tuple of these. The readings of a function also know
+an int literal, which takes the type of the integer it meets.
 """
 
 import annotationlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import GenericAlias, ModuleType
-from typing import Protocol, TypeAliasType, TypeIs, TypeVar, final, get_args, get_origin
+from typing import (
+    Protocol,
+    Self,
+    TypeAliasType,
+    TypeIs,
+    TypeVar,
+    final,
+    get_args,
+    get_origin,
+)
 
 import numpy as np
 from numba import types
@@ -37,6 +46,39 @@ class Record:
         return self.cls.declarations().get(name)
 
 
+@final
+@dataclass(frozen=True)
+class NamedValue:
+    """A `typing.NamedTuple` annotation: a value that travels as one, its fields declared."""
+
+    cls: type[tuple]
+    fields: tuple[tuple[str, Declared], ...]
+
+    @classmethod
+    def of(cls, value: Subject) -> Self | None:
+        """The named value `value` declares, None unless it is a `NamedTuple` of device fields."""
+        if not (
+            isinstance(value, type)
+            and issubclass(value, tuple)
+            and hasattr(value, "__match_args__")
+        ):
+            return None
+        kinds: dict[str, Declared] = {
+            name: declared(kind) for name, kind in annotationlib.get_annotations(value).items()
+        }
+        if None in kinds.values() or any(isinstance(kind, ConstantOf) for kind in kinds.values()):
+            return None
+        return cls(value, tuple(kinds.items()))
+
+    def field(self, name: str) -> Declared:
+        """What field `name` declares, None for a name the value lacks."""
+        return dict(self.fields).get(name)
+
+    def kinds(self) -> tuple[Declared, ...]:
+        """What each field declares, in order."""
+        return tuple(kind for _, kind in self.fields)
+
+
 # What a name in a function's globals or closure, or an annotation, evaluates to; a name not yet
 # defined stays a forward reference.
 type Evaluated = (
@@ -55,8 +97,8 @@ type Evaluated = (
 )
 # What a reading knows of a value: its scalar type, `bool`, a literal, or None for unknown.
 type Kind = type[np.generic] | type[bool] | IntLiteral | None
-# What an annotation declares: a kind, an array, a record, or a tuple of these.
-type Declared = Kind | ArrayOf | ConstantOf | Record | tuple[Declared, ...]
+# What an annotation declares: a kind, an array, a record, a named value, or a tuple of these.
+type Declared = Kind | ArrayOf | ConstantOf | Record | NamedValue | tuple[Declared, ...]
 type Returns = Declared | type[None]
 # Anything the predicates below are asked about.
 type Subject = Evaluated | Returns
@@ -89,7 +131,7 @@ def is_integer(kind: Subject) -> TypeIs[type[np.integer]]:
 
 def named(kind: Returns) -> str:
     match kind:
-        case Record():
+        case Record() | NamedValue():
             return kind.cls.__name__
         case ArrayOf():
             return f"{named(kind.element)}[{', '.join(['int'] * kind.ndim)}]"
@@ -116,6 +158,8 @@ def declared(value: Evaluated) -> Declared:
         return value
     if _is_record(value):
         return Record(value)
+    if (named_value := NamedValue.of(value)) is not None:
+        return named_value
     if is_scalar(value):
         return canonical(value)
     origin = get_origin(value)

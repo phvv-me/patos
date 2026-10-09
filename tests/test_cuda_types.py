@@ -8,9 +8,12 @@ import operator
 import pickle
 import re
 import textwrap
+from collections import Counter
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
-from types import FunctionType, SimpleNamespace
+from functools import cache
+from types import FunctionType, ModuleType, SimpleNamespace
+from typing import NamedTuple
 
 import cupy as cp
 import numpy as np
@@ -33,23 +36,39 @@ from patos.cuda.typed import (
     Kernel,
     Per,
     Struct,
+    block_index,
     cuda,
     device,
     i16,
     i32,
     i64,
+    items,
+    items_through,
     kernel,
+    lane,
     number,
     ptx,
+    thread_in_block,
+    thread_index,
     u8,
     u16,
     u32,
     u64,
     unsigned,
+    warp_in_block,
+    warp_index,
 )
 from patos.cuda.typed.arguments import Argument, argument
 from patos.cuda.typed.arithmetic import meet, met, operated
-from patos.cuda.typed.declarations import Evaluated, IntLiteral, Kind, Signature
+from patos.cuda.typed.declarations import (
+    Evaluated,
+    IntLiteral,
+    Kind,
+    NamedValue,
+    Signature,
+    declared,
+    named,
+)
 from patos.cuda.typed.scalars import ArrayOf
 
 # Checks, rewrites and typing rules need only the `cuda` extra, as numba-cuda decorates lazily;
@@ -143,6 +162,40 @@ class Window(Struct):
                 out[start] += window[offset]
 
 
+class Span(NamedTuple):
+    """A `[start, end)` span."""
+
+    start: i32
+    end: i32
+
+
+class Viewed(NamedTuple):
+    """A window of bytes: the bytes and where it opens."""
+
+    data: u8[int]
+    base: i64
+
+
+class Cell(NamedTuple):
+    """An unsigned offset and a signed step."""
+
+    offset: u32
+    step: i32
+
+
+class Stepped(NamedTuple):
+    """An unsigned offset and a signed step that defaults to one."""
+
+    offset: u32
+    step: i32 = i32(1)
+
+
+class Unfit(NamedTuple):
+    """A value one field of which names no device type."""
+
+    name: str
+
+
 @kernel
 def total(values: unsigned[int], sums: u64[int]) -> None:
     """Add every value into `sums[0]`."""
@@ -172,10 +225,14 @@ def member(self, out: u64[int]) -> None:
     """A kernel body taking `self`, which only a record class gives it."""
 
 
-_NAMESPACE: dict[str, Callable | type] = {
+_NAMESPACE: dict[str, Callable | type | ModuleType] = {
     "u8": u8, "u16": u16, "u32": u32, "u64": u64, "i16": i16, "i32": i32, "i64": i64,
     "number": number, "unsigned": unsigned, "Struct": Struct, "Tables": Tables, "Per": Per,
-    "cuda": cuda, "device": device, "kernel": kernel, "ptx": ptx,
+    "cuda": cuda, "device": device, "kernel": kernel, "ptx": ptx, "np": np, "items": items,
+    "items_through": items_through, "lane": lane, "thread_index": thread_index,
+    "warp_index": warp_index, "block_index": block_index, "thread_in_block": thread_in_block,
+    "warp_in_block": warp_in_block, "NamedTuple": NamedTuple, "Span": Span, "Viewed": Viewed,
+    "Unfit": Unfit, "Cell": Cell, "Stepped": Stepped,
 }  # fmt: skip
 
 
@@ -331,6 +388,51 @@ def verdict(function: FunctionType) -> str:
     return ""
 
 
+def ptx_of(launched: Kernel, *arguments, count: int = 1) -> str:
+    """The PTX `launched` compiles to when launched over `count` items of `arguments`.
+
+    A rename of its symbols leaves it as it is, and so does the environment pointer Numba declares
+    for each function it links, used or not.
+    """
+    launched[count](*arguments)
+    raw = launched.dispatcher.inspect_asm(next(iter(launched.dispatcher.overloads)))
+    code = re.sub(r"//[^\n]*|\.(?:version|target|address_size)[^\n]*", "", raw)
+    unused = {
+        found[1]
+        for found in re.finditer(r"\.common \.global [^;]*?([\w$]+);", code)
+        if code.count(found[1]) == 1
+    }
+    lines = [line.strip() for line in code.splitlines() if line.strip()]
+    entry = re.search(r"\.entry ([\w$]+)\(", code)
+    assert entry is not None
+    return "\n".join(line for line in lines if not any(name in line for name in unused)).replace(
+        entry[1], "kernel"
+    )
+
+
+def instructions(ptx: str) -> Counter[str]:
+    """How many times each instruction of `ptx` appears, whatever its operands and order.
+
+    A conjunction of five predicates is associated in another order on sm_121 for a named value
+    read by attribute than for a plain tuple unpacked, with the same instructions.
+    """
+    return Counter(line.split()[0] for line in ptx.splitlines())
+
+
+def named_rows(centers: Sequence[int], reach: int, data: np.ndarray) -> list[list[int]]:
+    """The int64 rows of shape `[len(centers), 6]` that `_NAMED.named` writes, wrapped as `i32`.
+
+    data: uint8 bytes of shape `[n]` that the last column reads at the start of each span.
+    """
+    rows = []
+    for item, center in enumerate(centers):
+        start, end = held([np.int32] * 2, [center - reach, center + reach])
+        before, after = held([np.int32] * 2, [start - 1, end + 1])
+        peeked = int(data[start]) if 0 <= start < len(data) else 0
+        rows.append([start, end, wrapped(np.int32, after - before), 1, item + 5, peeked])
+    return rows
+
+
 def wrapped(kind: Scalar, value: int) -> int:
     """`value` as a C cast to `kind` leaves it, wrapping around."""
     bits = 8 * np.dtype(kind).itemsize
@@ -475,6 +577,96 @@ _UNSTANDING: dict[str, tuple[Decorator, str, str]] = {
         device,
         "def f(n: i32) -> None:\n    i: {kind} = 0\n    for i in range(n):\n        pass\n",
         "loop variable `i` is declared",
+    ),
+    "items outside a loop": (
+        kernel,
+        "def f(n: i32) -> None:\n    x = items(n)\n",
+        "`items` is the iterable of a `for` loop",
+    ),
+    "items in a device function": (
+        device,
+        "def f(n: i32) -> None:\n    for i in items(n):\n        pass\n",
+        "a device function takes its item as a parameter",
+    ),
+    "items of two bounds": (
+        kernel,
+        "def f(n: i32) -> None:\n    for i in items_through(n, n):\n        pass\n",
+        "`items_through` takes one bound",
+    ),
+    "items of two variables": (
+        kernel,
+        "def f(n: i32) -> None:\n    for i, j in items(n):\n        pass\n",
+        "an `items` loop names its item with one variable",
+    ),
+    "items with an else": (
+        kernel,
+        "def f(n: i32) -> None:\n    for i in items(n):\n        pass\n    else:\n        pass\n",
+        "an `items` loop takes no `else`",
+    ),
+    "break without a stride": (
+        kernel,
+        "def f(n: i32) -> None:\n    for i in items(n):\n        break\n",
+        "a kernel that does not stride has one item: `return` leaves it",
+    ),
+    "continue without a stride": (
+        kernel,
+        "def f(n: i32) -> None:\n    for i in items(n):\n        continue\n",
+        "a kernel that does not stride has one item: `return` leaves it",
+    ),
+    "named value as a parameter of a kernel": (
+        kernel,
+        "def f(x: Span) -> None:\n    pass\n",
+        "a launch passes no Span",
+    ),
+    "named value returned as a tuple": (
+        device,
+        "def f(x: i32) -> Span:\n    return x, x\n",
+        "return `Span(...)` so the fields keep their names",
+    ),
+    "named value of an array returned": (
+        device,
+        "def f(x: Viewed) -> Viewed:\n    return x\n",
+        "a device function returns no array",
+    ),
+    "field cast to its declaration": (
+        device,
+        "def f(x: i32) -> Span:\n    return Span(i32(x), x)\n",
+        "`Span`'s parameter converts to i32",
+    ),
+    "field cast the operator already does": (
+        device,
+        "def f(x: Cell, y: i32) -> u32:\n    return x.offset + u32(y)\n",
+        "`u32(y)` is a redundant cast: `x.offset` is u32, so the operator converts it",
+    ),
+    "named value of too many fields": (
+        device,
+        "def f(x: i32) -> Span:\n    return Span(x, x, x)\n",
+        "`Span`: too many positional arguments",
+    ),
+    "named value of a missing field": (
+        device,
+        "def f(x: i32) -> Span:\n    return Span(x)\n",
+        "`Span`: missing a required argument: 'end'",
+    ),
+    "named value of an unknown field": (
+        device,
+        "def f(x: i32) -> Span:\n    return Span(x, end=x, stop=x)\n",
+        "`Span`: got an unexpected keyword argument 'stop'",
+    ),
+    "named value of a field given twice": (
+        device,
+        "def f(x: i32) -> Span:\n    return Span(x, start=x)\n",
+        "`Span`: multiple values for argument 'start'",
+    ),
+    "named value of unpacked fields": (
+        device,
+        "def f(x: i32) -> Span:\n    pair = x, x\n    return Span(*pair)\n",
+        "`Span`: takes its fields one by one, not unpacked",
+    ),
+    "named value with an undeclared field": (
+        device,
+        "def f(x: Unfit) -> None:\n    pass\n",
+        "`Unfit` names no device type",
     ),
 }
 
@@ -1284,3 +1476,722 @@ def test_the_hash_records_answer_on_the_device_what_the_host_built_them_from(
     assert rows[:, 0].tolist() == [entries.get(key, -1) for key in keys.tolist()]
     assert rows[: len(entries), 1].all()
     assert rows[:, 2].tolist() == [int(flags[key & 1023]) for key in keys.tolist()]
+
+
+@device
+def always() -> bool:
+    return True
+
+
+@device
+def first_lane() -> bool:
+    return lane() == 0
+
+
+@device
+def first_thread() -> bool:
+    return thread_in_block() == 0
+
+
+_LEADERS = {Per.THREAD: always, Per.WARP: first_lane, Per.BLOCK: first_thread}
+
+
+@cache
+def counting(per: Per, *, strided: bool) -> Kernel:
+    """A kernel counting each item its `items` loop visits below `count`, once for the item."""
+    leads = _LEADERS[per]
+
+    @kernel(per=per, threads=64, strided=strided)
+    def visit(visits: i32[int], count: i32) -> None:
+        for item in items(count):
+            if leads():
+                visits[item] += 1
+
+    return visit
+
+
+_EXITS = executed(
+    """
+    @kernel(strided=True, threads=32)
+    def even_below(visits: i32[int], live: i32[int], cap: i32) -> None:
+        for item in items_through(live[0]):
+            if item % 2 == 1:
+                continue
+            if item >= cap:
+                break
+            visits[item] += 1
+
+
+    @kernel(strided=True, threads=1)
+    def growing(visits: i32[int], live: i32[int], cap: i32) -> None:
+        for item in items(live[0]):
+            visits[item] += 1
+            if live[0] < cap:
+                live[0] += 1
+    """
+)
+
+_LOOPS = executed(
+    """
+    @kernel(strided=True)
+    def thread_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        for item in items(live[0]):
+            out[item] = values[item] * 2
+
+
+    @kernel(strided=True)
+    def thread_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        item = cuda.grid(1)
+        stride = cuda.gridsize(1)
+        while item < live[0]:
+            out[item] = values[item] * 2
+            item += stride
+
+
+    @kernel(per=Per.WARP, strided=True)
+    def warp_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        for item in items(live[0]):
+            if lane() == 0:
+                out[item] = values[item] * 2
+
+
+    @kernel(per=Per.WARP, strided=True)
+    def warp_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        item = cuda.grid(1) // 32
+        stride = cuda.gridsize(1) // 32
+        while item < live[0]:
+            if cuda.laneid == 0:
+                out[item] = values[item] * 2
+            item += stride
+
+
+    @kernel(per=Per.BLOCK, strided=True)
+    def block_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        for item in items(live[0]):
+            if thread_in_block() == 0:
+                out[item] = values[item] * 2
+
+
+    @kernel(per=Per.BLOCK, strided=True)
+    def block_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        item = cuda.blockIdx.x
+        stride = cuda.gridDim.x
+        while item < live[0]:
+            if cuda.threadIdx.x == 0:
+                out[item] = values[item] * 2
+            item += stride
+
+
+    @kernel
+    def guard_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        for item in items(live[0]):
+            out[item] = values[item] * 2
+
+
+    @kernel
+    def guard_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        item = cuda.grid(1)
+        if item < live[0]:
+            out[item] = values[item] * 2
+
+
+    @kernel(strided=True)
+    def through_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        for item in items_through(live[0]):
+            out[item] = values[item] * 2
+
+
+    @kernel(strided=True)
+    def through_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        item = cuda.grid(1)
+        stride = cuda.gridsize(1)
+        while item <= live[0]:
+            out[item] = values[item] * 2
+            item += stride
+
+
+    @kernel(strided=True)
+    def continue_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        for item in items(live[0]):
+            if values[item] & 1:
+                continue
+            out[item] = values[item] * 2
+
+
+    @kernel(strided=True)
+    def continue_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+        item = cuda.grid(1)
+        stride = cuda.gridsize(1)
+        while item < live[0]:
+            if values[item] & 1:
+                item += stride
+                continue
+            out[item] = values[item] * 2
+            item += stride
+    """
+)
+
+# Each identity helper's call, the expression it names, its value for thread `t` of 128-thread
+# blocks and its type.
+_IDENTITIES: dict[str, tuple[str, str, Callable[[int], int], type[np.integer]]] = {
+    "thread_index": ("thread_index()", "cuda.grid(1)", lambda t: t, np.int64),
+    "warp_index": ("warp_index()", "cuda.grid(1) // 32", lambda t: t // 32, np.int64),
+    "block_index": ("block_index()", "cuda.blockIdx.x", lambda t: t // 128, np.int32),
+    "lane": ("lane()", "cuda.laneid", lambda t: t % 32, np.int32),
+    "thread_in_block": ("thread_in_block()", "cuda.threadIdx.x", lambda t: t % 128, np.int32),
+    "warp_in_block": (
+        "warp_in_block()", "cuda.threadIdx.x // 32", lambda t: t % 128 // 32, np.int32
+    ),
+}  # fmt: skip
+
+_TILING = executed(
+    """
+    class Payload(Struct):
+        starts: i32[int]
+        ends: i32[int]
+
+
+    class Tiling(Struct):
+        padding: i32
+
+        @device
+        def bounds(self, payload: Payload) -> tuple[i32, i32]:
+            tile = warp_index()
+            return payload.starts[tile] - self.padding, payload.ends[tile] + self.padding
+
+        @device
+        def bounds_by_hand(self, starts: i32[int], ends: i32[int], tile: i64) -> tuple[i32, i32]:
+            return starts[tile] - self.padding, ends[tile] + self.padding
+
+        @kernel(per=Per.WARP, threads=64)
+        def measure(self, payload: Payload, out: i32[int, int]) -> None:
+            tile = warp_index()
+            if tile < out.shape[0] and lane() == 0:
+                first, last = self.bounds(payload)
+                out[tile, 0] = first
+                out[tile, 1] = last
+
+        @kernel(per=Per.WARP, threads=64)
+        def measure_by_hand(self, payload: Payload, out: i32[int, int]) -> None:
+            tile = cuda.grid(1) // 32
+            if tile < out.shape[0] and cuda.laneid == 0:
+                first, last = self.bounds_by_hand(payload.starts, payload.ends, tile)
+                out[tile, 0] = first
+                out[tile, 1] = last
+    """
+)
+
+_NAMED = executed(
+    """
+    class Window(NamedTuple):
+        base: u64
+        capacity: u32
+
+
+    @device
+    def around(at: i64, reach: i64) -> Span:
+        return Span(at - reach, at + reach)
+
+
+    @device
+    def around_by_name(at: i64, reach: i64) -> Span:
+        return Span(end=at + reach, start=at - reach)
+
+
+    @device
+    def width(span: Span) -> i32:
+        return span.end - span.start
+
+
+    @device
+    def widened(span: Span, by: i32) -> Span:
+        start, end = span
+        return Span(start - by, end + by)
+
+
+    @device
+    def window(base: i64, capacity: i64) -> Window:
+        return Window(base, capacity)
+
+
+    @device
+    def room(held: Window) -> u64:
+        return held.base + held.capacity
+
+
+    @device
+    def peek(view: Viewed, index: i64) -> u8:
+        return view.data[view.base + index]
+
+
+    @kernel
+    def named(centers: i64[int], reach: i64, data: u8[int], out: i64[int, int]) -> None:
+        item = cuda.grid(1)
+        if item < centers.size:
+            span: Span = around(centers[item], reach)
+            wide = widened(span, 1)
+            out[item, 0] = span.start
+            out[item, 1] = span.end
+            out[item, 2] = width(wide)
+            out[item, 3] = around_by_name(centers[item], reach)[0] == span.start
+            out[item, 4] = room(window(item, 5))
+            if 0 <= span.start and span.start < data.size:
+                out[item, 5] = peek(Viewed(data, span.start), 0)
+
+
+    @kernel
+    def viewed(data: unsigned[int], out: i64[int]) -> None:
+        out[0] = peek(Viewed(data, 1), 1)
+
+
+    @cuda.jit(device=True)
+    def misfit_span():
+        return Span(np.int64(1), np.int64(2))
+
+
+    @kernel
+    def misfit(out: i32[int]) -> None:
+        out[0] = width(misfit_span())
+    """
+)
+
+_CONTEXTS = executed(
+    """
+    type Plain = tuple[i32, i32, i32, i32, i32]
+
+
+    class Context(NamedTuple):
+        cursor: i32
+        state: i32
+        accepted: i32
+        scalar_start: i32
+        gap: i32
+
+
+    @device
+    def opened_plain(at: i32) -> Plain:
+        return at, 0, at, at, at
+
+
+    @device
+    def opened(at: i32) -> Context:
+        return Context(at, 0, at, at, at)
+
+
+    @device
+    def stepped_plain(context: Plain, byte: i32) -> Plain:
+        cursor, state, accepted, scalar_start, gap = context
+        if byte == 10:
+            return cursor + 1, 0, cursor + 1, cursor + 1, cursor + 1
+        return cursor + 1, state ^ byte, accepted, scalar_start, gap
+
+
+    @device
+    def stepped(context: Context, byte: i32) -> Context:
+        cursor, state, accepted, scalar_start, gap = context
+        if byte == 10:
+            return Context(cursor + 1, 0, cursor + 1, cursor + 1, cursor + 1)
+        return Context(cursor + 1, state ^ byte, accepted, scalar_start, gap)
+
+
+    @device
+    def same_plain(context: Plain, entry: Plain) -> bool:
+        cursor, state, accepted, scalar_start, gap = context
+        entry_cursor, entry_state, entry_accepted, entry_scalar_start, entry_gap = entry
+        return (
+            state == entry_state
+            and accepted == entry_accepted
+            and scalar_start == entry_scalar_start
+            and accepted > cursor
+            and entry_accepted > entry_cursor
+        )
+
+
+    @device
+    def same(context: Context, entry: Context) -> bool:
+        return (
+            context.state == entry.state
+            and context.accepted == entry.accepted
+            and context.scalar_start == entry.scalar_start
+            and context.accepted > context.cursor
+            and entry.accepted > entry.cursor
+        )
+
+
+    @kernel
+    def walk_plain(chars: u8[int], out: i32[int]) -> None:
+        item = cuda.grid(1)
+        if item < out.size:
+            context = opened_plain(item)
+            entry = opened_plain(item + 1)
+            for index in range(chars.size):
+                context = stepped_plain(context, chars[index])
+                entry = stepped_plain(entry, chars[index] ^ 1)
+            out[item] = same_plain(context, entry)
+
+
+    @kernel
+    def walk_named(chars: u8[int], out: i32[int]) -> None:
+        item = cuda.grid(1)
+        if item < out.size:
+            context = opened(item)
+            entry = opened(item + 1)
+            for index in range(chars.size):
+                context = stepped(context, chars[index])
+                entry = stepped(entry, chars[index] ^ 1)
+            out[item] = same(context, entry)
+    """
+)
+
+
+def test_a_named_tuple_declares_its_fields_and_one_with_an_undeclared_field_declares_nothing() -> (
+    None
+):
+    """A named value is declared by its class, field by field, and spelled by the class's name."""
+    span = declared(annotation("Span"))
+
+    assert span == NamedValue(Span, (("start", np.int32), ("end", np.int32)))
+    assert isinstance(span, NamedValue) and span.kinds() == (np.int32, np.int32)
+    assert named(span) == "Span"
+    assert declared(annotation("Unfit")) is None
+    assert isinstance(viewed := declared(annotation("Viewed")), NamedValue)
+    assert viewed.field("data") == ArrayOf(np.uint8, 1)
+
+
+def test_a_record_holds_no_named_value() -> None:
+    """A record marshals scalars, arrays and records, so a field naming a value fails at once."""
+
+    class Holds(Struct):
+        span: Span
+
+    with pytest.raises(TypeError, match=r"Holds\.span is a named value"):
+        Holds.declarations()
+
+
+@pytest.mark.parametrize("name", _IDENTITIES)
+def test_an_identity_helper_returns_the_type_numba_gives_the_expression_it_names(
+    name: str,
+) -> None:
+    """The index of a thread in the grid is 64 bits wide, every other identity 32."""
+    assert recorded(globals()[name].py_func) == Signature((), _IDENTITIES[name][3])
+
+
+@pytest.mark.parametrize("name", _IDENTITIES)
+@gpu
+def test_an_identity_helper_gives_the_value_of_the_expression_it_names_in_the_same_ptx(
+    name: str,
+) -> None:
+    """Called in a kernel, a helper is the expression written there: its value and its PTX."""
+    call, expression, expected, _ = _IDENTITIES[name]
+    kernels = [
+        executed(
+            f"""
+            @kernel(threads=128)
+            def f(out: i64[int]) -> None:
+                out[cuda.grid(1)] = {stored}
+            """
+        ).f
+        for stored in (call, expression)
+    ]
+    outs = [cp.zeros(384, np.int64) for _ in kernels]
+    ptx = [ptx_of(launched, out, count=384) for launched, out in zip(kernels, outs, strict=True)]
+    wanted = [expected(t) for t in range(384)]
+
+    assert ptx[0] == ptx[1]
+    assert outs[0].get().tolist() == outs[1].get().tolist() == wanted
+
+
+@gpu
+@pytest.mark.parametrize("shape", ["thread", "warp", "block", "guard", "through", "continue"])
+def test_an_items_loop_compiles_to_the_loop_a_kernel_writes_by_hand(*, shape: str) -> None:
+    """The PTX of an items loop is the hand-written loop's.
+
+    The bound is reloaded each pass and the stride held in a register, and a kernel that does not
+    stride has only its guard.
+    """
+    values, live = cp.arange(64, dtype=np.int32), cp.array([40], np.int32)
+    outs = [cp.zeros(64, np.int32) for _ in range(2)]
+    ptx = [
+        ptx_of(getattr(_LOOPS, f"{shape}_{kind}"), values, out, live)
+        for kind, out in zip(("items", "hand"), outs, strict=True)
+    ]
+
+    assert ptx[0] == ptx[1]
+    assert outs[0].get().tolist() == outs[1].get().tolist()
+    assert outs[0].any()
+
+
+@gpu
+@given(
+    per=st.sampled_from(Per),
+    strided=st.booleans(),
+    count=st.integers(0, 150),
+    launched=st.integers(1, 150),
+)
+@settings(deadline=None, max_examples=40)
+def test_an_items_loop_visits_each_item_of_the_kernel_below_its_bound_once(
+    *, per: Per, strided: bool, count: int, launched: int
+) -> None:
+    """An items loop visits each item below its bound once.
+
+    A kernel that strides reaches every one however few items it launched, any other kernel its
+    own, which a launch rounds up to whole blocks.
+    """
+    visit = counting(per, strided=strided)
+    blocks, threads = visit.grid(launched)
+    held = blocks * threads // per.lanes(threads)
+    visits = cp.zeros(max(count, held) + 1, np.int32)
+    visit[launched](visits, count)
+
+    reached = count if strided else min(count, held)
+    assert visits.get().tolist() == [1] * reached + [0] * (len(visits) - reached)
+
+
+@gpu
+@given(live=st.integers(0, 120), cap=st.integers(0, 130))
+@settings(deadline=None, max_examples=30)
+def test_an_items_loop_skips_by_continue_leaves_by_break_and_may_end_inclusive(
+    *, live: int, cap: int
+) -> None:
+    """`continue` goes on to the thread's next item and `break` ends its loop."""
+    visits, bound = cp.zeros(140, np.int32), cp.array([live], np.int32)
+    _EXITS.even_below[3](visits, bound, cap)
+
+    assert visits.get().tolist() == [int(i % 2 == 0 and i < cap and i <= live) for i in range(140)]
+
+
+@gpu
+@given(live=st.integers(0, 12), cap=st.integers(0, 20))
+@settings(deadline=None, max_examples=30)
+def test_an_items_loop_reads_its_bound_again_each_pass_as_a_while_loop_does(
+    *, live: int, cap: int
+) -> None:
+    """A device bound that the loop itself grows is followed to where it stops."""
+    bound, seen, reached = live, [], 0
+    while reached < bound:
+        seen.append(reached)
+        bound += bound < cap
+        reached += 1
+    visits, held = cp.zeros(24, np.int32), cp.array([live], np.int32)
+    _EXITS.growing[1](visits, held, cap)
+
+    assert visits.get().tolist() == [int(i in seen) for i in range(24)]
+    assert held.get().tolist() == [bound]
+
+
+@gpu
+@given(
+    padding=st.integers(-5, 5),
+    spans=st.lists(st.tuples(st.integers(0, 90), st.integers(0, 10)), min_size=1, max_size=8),
+)
+@settings(deadline=None, max_examples=20)
+def test_a_device_method_takes_a_record_and_an_identity_helper_in_the_ptx_of_the_hand_written_one(
+    *, padding: int, spans: Sequence[tuple[int, int]]
+) -> None:
+    """`tiling.bounds(payload)` reads the fields of `payload` and the warp's own index.
+
+    It compiles to the PTX of `bounds_by_hand(payload.starts, payload.ends, tile)`, which is
+    passed them.
+    """
+    starts = np.array([start for start, _ in spans], np.int32)
+    payload = _TILING.Payload(starts, starts + np.array([w for _, w in spans], np.int32))
+    tiling = _TILING.Tiling(padding)
+    outs = [cp.zeros((len(spans), 2), np.int32) for _ in range(2)]
+    kernels = [_TILING.Tiling.measure, _TILING.Tiling.measure_by_hand]
+    ptx = [
+        ptx_of(k, tiling, payload, out, count=len(spans))
+        for k, out in zip(kernels, outs, strict=True)
+    ]
+    wanted = np.stack([payload.starts.get() - padding, payload.ends.get() + padding], axis=1)
+
+    assert ptx[0] == ptx[1]
+    assert all(np.array_equal(out.get(), wanted) for out in outs)
+
+
+@gpu
+@given(
+    centers=st.lists(st.integers(-(2**40), 2**40), min_size=1, max_size=8),
+    reach=st.integers(0, 2**33),
+)
+@settings(deadline=None, max_examples=25)
+def test_a_named_value_converts_its_fields_and_is_read_passed_and_returned_on_the_device(
+    *, centers: list[int], reach: int
+) -> None:
+    """A named value converts its fields when built and travels the device.
+
+    A construction converts each field to its declaration, positionally or by name, and the value
+    is read by attribute, by index and by unpacking, passed and returned.
+    """
+    data = (np.arange(60) * 3 + 7).astype(np.uint8)
+    out = cp.zeros((len(centers), 6), np.int64)
+    centers_on_device = cp.asarray(np.array(centers, np.int64))
+    _NAMED.named[len(centers)](centers_on_device, reach, cp.asarray(data), out)
+
+    assert out.get().tolist() == named_rows(centers, reach, data)
+
+
+@gpu
+def test_a_named_value_of_other_fields_than_declared_is_refused_where_it_is_passed() -> None:
+    """Numba converts one named tuple to no other, so a call is refused, never converted."""
+    with pytest.raises(TypingError, match=r"`span` receives .* where Span is declared"):
+        _NAMED.misfit[1](cp.zeros(1, np.int32))
+    data, out = cp.arange(4, dtype=np.uint8), cp.zeros(1, np.int64)
+    _NAMED.viewed[1](data, out)
+    assert out.get().tolist() == [2]
+    with pytest.raises(TypingError, match=r"`view` receives .* where Viewed is declared"):
+        _NAMED.viewed[1](data.astype(np.uint16), out)
+
+
+@gpu
+def test_a_named_context_compiles_to_the_ptx_of_the_plain_tuple_it_replaces() -> None:
+    """A named `Context` compiles to the PTX of the plain tuple it replaces.
+
+    Five fields are walked through two device functions, read by attribute or by unpacking and
+    built by their class, as the five-tuple is.
+    """
+    chars = cp.asarray(np.frombuffer(b"abc\ndef\n\nxyz" * 3, np.uint8))
+    outs = [cp.zeros(16, np.int32) for _ in range(2)]
+    ptx = [
+        ptx_of(launched, chars, out)
+        for launched, out in zip((_CONTEXTS.walk_plain, _CONTEXTS.walk_named), outs, strict=True)
+    ]
+
+    assert instructions(ptx[0]) == instructions(ptx[1])
+    assert outs[0].get().tolist() == outs[1].get().tolist()
+
+
+_SHAPES = executed(
+    """
+    @kernel(strided=True, threads=32)
+    def nested(visits: i32[int], count: i32) -> None:
+        for outer in items(count):
+            for inner in items(count):
+                visits[outer] += 1
+
+
+    @kernel(strided=True, threads=32)
+    def branched(visits: i32[int], count: i32, flag: i32) -> None:
+        if flag > 0:
+            for item in items(count):
+                visits[item] += 1
+
+
+    @kernel(strided=True, threads=32)
+    def shifted(visits: i32[int], count: i32) -> None:
+        for item in items(count):
+            item = item + 100
+            visits[item - 100] = item
+
+
+    @kernel(strided=True, threads=32)
+    def returning(visits: i32[int], count: i32) -> None:
+        for item in items(count):
+            if item % 32 == 5:
+                return
+            visits[item] = 1
+
+
+    class Counted(Struct):
+        visits: i32[int]
+
+        @kernel(strided=True, threads=32)
+        def count(self, count: i32) -> None:
+            for item in items(count):
+                self.visits[item] += 1
+    """
+)
+
+# One block of 32 threads strides over 70 items, so thread `t` has the items `t`, `t + 32`, ... .
+_STRIDED = {
+    "nested": lambda i: len(range(i % 32, 70, 32)) if i < 70 else 0,
+    "branched": lambda i: int(i < 70),
+    "shifted": lambda i: i + 100 if i < 70 else 0,
+    "returning": lambda i: int(i < 70 and i % 32 != 5),
+}
+
+
+@gpu
+@pytest.mark.parametrize("shape", _STRIDED)
+def test_an_items_loop_nests_branches_may_assign_its_item_and_ends_with_a_return(
+    *, shape: str
+) -> None:
+    """Each loop belongs to the thread's own items, which a nested one visits again.
+
+    A branch holds a loop whole, the body may assign `item` without moving the loop, and a `return`
+    ends all the items of its thread, so thread 5 visits none.
+    """
+    visits = cp.zeros(128, np.int32)
+    getattr(_SHAPES, shape)[32](visits, 70, *([1] if shape == "branched" else []))
+
+    assert visits.get().tolist() == [_STRIDED[shape](i) for i in range(128)]
+
+
+@gpu
+def test_an_items_loop_of_a_record_kernel_visits_the_items_the_record_is_given() -> None:
+    """A kernel defined in a record loops over items as any kernel does."""
+    counted = _SHAPES.Counted(cp.zeros(100, np.int32))
+    counted.count[32](70)
+
+    assert counted.visits.get().tolist() == [int(i < 70) for i in range(100)]
+
+
+@gpu
+@given(at=st.integers(-(2**40), 2**40))
+@settings(deadline=None, max_examples=15)
+def test_a_named_value_takes_its_defaults_and_its_keywords_in_the_order_of_its_fields(
+    *, at: int
+) -> None:
+    """Each field converts to its declaration whichever way it is given, a default included."""
+    built = executed(
+        """
+        @device
+        def reach(cell: Stepped) -> i64:
+            return cell.offset + cell.step
+
+
+        @kernel
+        def build(out: i64[int], at: i64) -> None:
+            out[0] = reach(Stepped(at))
+            out[1] = reach(Stepped(step=at, offset=at + 1))
+            out[2] = reach(Stepped(at, step=2))
+        """
+    )
+    out = cp.zeros(3, np.int64)
+    built.build[1](out, at)
+
+    offset, step = wrapped(np.uint32, at), wrapped(np.int32, at)
+    wanted = [offset + 1, wrapped(np.uint32, at + 1) + step, offset + 2]
+    assert out.get().tolist() == [wrapped(np.uint32, value) for value in wanted]
+
+
+@gpu
+def test_a_function_without_parameters_inlines_into_its_callers_unless_it_stays_out_of_line() -> (
+    None
+):
+    """The IR of a caller holds a parameterless function's expression, and a call of the other."""
+    inlined = executed(
+        """
+        @device
+        def folded() -> i32:
+            return cuda.threadIdx.x
+
+
+        @device(inline=False)
+        def kept() -> i32:
+            return cuda.threadIdx.x
+
+
+        @kernel
+        def f(out: i32[int]) -> None:
+            out[cuda.grid(1)] = folded() + kept()
+        """
+    ).f
+    out = cp.zeros(32, np.int32)
+    inlined[32](out)
+    defines = re.findall(
+        r"define [^@]*@\S*?(folded|kept)",
+        inlined.dispatcher.inspect_llvm(next(iter(inlined.dispatcher.overloads))),
+    )
+
+    assert defines == ["kept"]
+    assert out.get().tolist() == [2 * i for i in range(32)]

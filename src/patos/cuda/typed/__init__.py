@@ -14,8 +14,13 @@ Since the annotations already say what every value converts to, the decorators r
 repeats what an annotation or an operator already does (`checks`). A device function can also be
 one PTX block behind an annotated stub (`intrinsics`).
 
+A `typing.NamedTuple` of declared fields is a named value, built on the device by calling its class
+and held by device functions only (`declarations`). A device function reads who it runs as from
+`lane()`, `warp_index()` and the rest of `identity`, taking no such parameter.
+
 A kernel is an object launched as `kernel[items](*arguments)`, its grid following from what each
-item runs on (`kernels`). A `Struct` is its own device type (`records`): device functions and
+item runs on (`kernels`), and loops over its own items as `for segment in items(count)`
+(`items`). A `Struct` is its own device type (`records`): device functions and
 kernels defined in it with an unannotated `self` are its methods, its operators and its
 attributes.
 """
@@ -23,13 +28,24 @@ attributes.
 from numba import cuda
 
 from .decorators import device
+from .identity import (
+    block_index,
+    lane,
+    thread_in_block,
+    thread_index,
+    warp_in_block,
+    warp_index,
+)
 from .intrinsics import ptx
+from .items import items, items_through
 from .kernels import Kernel, Per, kernel
 from .reading import AnnotationError
 from .scalars import Constant, i16, i32, i64, number, u8, u16, u32, u64, unsigned
 from .struct import Struct
 
 __all__ = [
-    "AnnotationError", "Constant", "Kernel", "Per", "Struct", "cuda", "device", "i16", "i32",
-    "i64", "kernel", "number", "ptx", "u8", "u16", "u32", "u64", "unsigned",
+    "AnnotationError", "Constant", "Kernel", "Per", "Struct", "block_index", "cuda", "device",
+    "i16", "i32", "i64", "items", "items_through", "kernel", "lane", "number", "ptx",
+    "thread_in_block", "thread_index", "u8", "u16", "u32", "u64", "unsigned", "warp_in_block",
+    "warp_index",
 ]  # fmt: skip

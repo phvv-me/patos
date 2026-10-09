@@ -5,15 +5,16 @@ import annotationlib
 import ast
 import inspect
 import textwrap
-from collections.abc import Iterator, Mapping, MutableMapping
+from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from types import FunctionType, NoneType
-from typing import TypeVar
+from typing import TypeIs, TypeVar
 
 import numpy as np
 
 from .declarations import (
     Declared,
     Evaluated,
+    NamedValue,
     Record,
     Returns,
     Signature,
@@ -22,6 +23,7 @@ from .declarations import (
     named,
     unaliased,
 )
+from .items import items, items_through
 from .scalars import ArrayOf, canonical
 
 
@@ -61,12 +63,18 @@ class Reading:
         self.declared = self._declarations()
 
     def callee(self, node: ast.expr) -> Signature | None:
-        """The signature of the device function `node` calls, when it is one of these."""
+        """The signature of the device function `node` calls, or of the named value it builds."""
         if not isinstance(node, ast.Call):
             return None
+        if (built := self.constructed(node)) is not None:
+            return Signature(built.kinds(), built)
         # A dispatcher keeps the signature on the function it compiles, an intrinsic on itself.
         callee = resolved(node.func, self.namespace)
         return getattr(getattr(callee, "py_func", callee), "device_signature", None)
+
+    def calls(self, node: ast.AST, *functions: Callable) -> TypeIs[ast.Call]:
+        """Whether `node` calls one of `functions`, through any name it was imported under."""
+        return isinstance(node, ast.Call) and resolved(node.func, self.namespace) in functions
 
     def cast(self, node: ast.expr) -> type[np.generic] | None:
         """The scalar type `node` converts to when it is a cast `T(value)`."""
@@ -75,6 +83,11 @@ class Reading:
             return canonical(target) if is_scalar(target) else None
         return None
 
+    def constructed(self, node: ast.Call) -> NamedValue | None:
+        """The named value `node` builds when it calls the class that declares it."""
+        kind = declared(resolved(node.func, self.namespace))
+        return kind if isinstance(kind, NamedValue) else None
+
     def declared_scalar(self, target: ast.expr) -> type[np.generic] | None:
         """The scalar type `target` is declared, which every assignment to it converts to."""
         if isinstance(target, ast.Name):
@@ -82,8 +95,35 @@ class Reading:
             return kind if is_scalar(kind) else None
         return None
 
+    def fields(self, node: ast.Call, built: NamedValue) -> list[ast.expr]:
+        """The expression each field of `built` takes from the call `node`, a default included.
+
+        A default is a literal, or a scalar written as its type (`step: i32 = i32(1)`).
+
+        Raises `TypeError` unless the arguments fit the fields one by one.
+        """
+        if any(isinstance(argument, ast.Starred) for argument in node.args) or any(
+            keyword.arg is None for keyword in node.keywords
+        ):
+            raise TypeError("takes its fields one by one, not unpacked")
+        given = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
+        bound = inspect.signature(built.cls).bind(*node.args, **given)
+        bound.apply_defaults()
+        return [
+            value
+            if isinstance(value, ast.expr)
+            else ast.Constant(value.item() if isinstance(value, np.generic) else value)
+            for value in bound.args
+        ]
+
     def issue(self, node: ast.expr | ast.stmt | ast.arg, message: str) -> None:
         self.issues.append((node.lineno, message))
+
+    def item_call(self, node: ast.AST) -> ast.Call | None:
+        """The `items` or `items_through` call that `node` loops over, None for any other node."""
+        if isinstance(node, ast.For) and self.calls(node.iter, items, items_through):
+            return node.iter
+        return None
 
     def raise_issues(self) -> None:
         """Raise `AnnotationError` naming every issue found, line by line, if there is one."""
@@ -185,7 +225,10 @@ class Reading:
         if argument.annotation is None:
             self.issue(argument, f"parameter `{argument.arg}` has no annotation")
             return None
-        return self._annotation(argument.annotation)
+        kind = self._annotation(argument.annotation)
+        if self.kernel and isinstance(kind, NamedValue):
+            self.issue(argument, f"a launch passes no {named(kind)}; a record carries its fields")
+        return kind
 
     def _returns(self, *, kernel: bool) -> Returns:
         node = self.definition.returns
@@ -219,6 +262,8 @@ def resolved(node: ast.expr, namespace: dict[str, Evaluated]) -> Evaluated:
 def _has_array(declared: Returns) -> bool:
     if isinstance(declared, Record):
         return any(_has_array(kind) for kind in declared.cls.declarations().values())
+    if isinstance(declared, NamedValue):
+        return any(_has_array(kind) for kind in declared.kinds())
     if isinstance(declared, tuple):
         return any(_has_array(element) for element in declared)
     return isinstance(declared, ArrayOf)

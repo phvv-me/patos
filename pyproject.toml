@@ -116,6 +116,20 @@ matches = "src/patos/cuda/primitives/hash.py"
 [tool.pyrefly.sub-config.errors]
 bad-return = false
 
+# A device function declares a local from a plain literal (`slot: i32 = -1`), because `device`
+# converts every assignment to the declaration, a rewrite no checker sees.
+[[tool.pyrefly.sub-config]]
+matches = "src/patos/cuda/primitives/warp.py"
+
+[tool.pyrefly.sub-config.errors]
+bad-assignment = false
+
+[[tool.pyrefly.sub-config]]
+matches = "src/patos/cuda/primitives/block.py"
+
+[tool.pyrefly.sub-config.errors]
+bad-assignment = false
+
 # A `Struct` subclass becomes a named tuple of fields read at class creation, which pyrefly takes for
 # a malformed functional `namedtuple` definition, since it expects the field names spelled out.
 [[tool.pyrefly.sub-config]]
@@ -150,9 +164,16 @@ include = ["src/patos/cuda/primitives/hash.py"]
 [tool.ty.overrides.rules]
 invalid-return-type = "ignore"
 
+# The same declared locals as pyrefly's `bad-assignment` sub-configs above.
+[[tool.ty.overrides]]
+include = ["src/patos/cuda/primitives/warp.py", "src/patos/cuda/primitives/block.py"]
+
+[tool.ty.overrides.rules]
+invalid-assignment = "ignore"
+
 # An intrinsic's stub declares only a signature; `ptx` supplies its body.
 [[tool.ty.overrides]]
-include = ["src/patos/cuda/primitives/warp.py"]
+include = ["src/patos/cuda/primitives/warp.py", "src/patos/cuda/primitives/scalar.py"]
 
 [tool.ty.overrides.rules]
 empty-body = "ignore"
@@ -183,22 +204,23 @@ exclude = [
 [tool.mcmr.rules."ALL-REAC0001"]
 exclude = [
   "src/patos/cuda/runtime/memory.py",
+  "src/patos/cuda/hashing.py",
   "src/patos/cuda/primitives/hash.py",
   "src/patos/cuda/runtime/streams.py",
 ]
 
 # `pair_key`, `splitmix` and `table_capacity` are defined here and called from cutoken.
 [tool.mcmr.rules."ALL-REAC0002"]
-exclude = ["src/patos/cuda/primitives/hash.py"]
+exclude = ["src/patos/cuda/hashing.py"]
 
-# Kernels read a module global as a compile-time constant, so `EMPTY_KEY` stays public in the
-# module that owns it and cutoken's kernels import it by name.
+# Kernels read a module global as a compile-time constant, so `EMPTY_KEY` and the splitmix
+# constants stay public in the host module that owns them and the device modules import them by name.
 [tool.mcmr.rules."PY-CONS0001"]
-exclude = ["src/patos/cuda/primitives/hash.py"]
+exclude = ["src/patos/cuda/hashing.py"]
 
-# The package surface passes `EMPTY_KEY` on for the same reason.
+# The device hash and the package surface take those constants by name for the same reason.
 [tool.mcmr.rules."PY-CONS0002"]
-exclude = ["src/patos/cuda/primitives/__init__.py"]
+exclude = ["src/patos/cuda/primitives/__init__.py", "src/patos/cuda/primitives/hash.py"]
 
 # The typed tests pin the arithmetic rules, the declarations and the marshalling in the modules
 # that define them, which the package surface does not re-export.
@@ -230,15 +252,16 @@ exclude = [
 exclude = ["src/patos/cuda/typed/declarations.py"]
 
 # `left` and `right` are the operands of a binary operator, and `operand`, `other`, `target` and
-# `value` the AST nodes of an operation or a store; warp.py holds device functions that cutoken's
-# kernels call positionally, as they do `hash.probe`.
+# `value` the AST nodes of an operation or a store. The bit and byte primitives keep the operand
+# order of the CUDA intrinsics they mirror (`__funnelshift_r(lo, hi, shift)`, `__dp4a`).
 [tool.mcmr.rules."ALL-PARA0001"]
 exclude = [
   "src/patos/cuda/typed/arithmetic.py",
   "src/patos/cuda/typed/checks.py",
   "src/patos/cuda/typed/rewrite.py",
   "src/patos/cuda/primitives/hash.py",
-  "src/patos/cuda/primitives/warp.py",
+  "src/patos/cuda/primitives/bits.py",
+  "src/patos/cuda/primitives/bytewise.py",
 ]
 
 # `ballot_prefix(flag)` is a device function that cutoken's kernels call positionally.

@@ -1,14 +1,16 @@
 """The checks a function's annotations pass before it compiles: every `return` converts element by
-element, and no cast repeats what an annotation or an operator already does."""
+element, no cast repeats what an annotation or an operator already does, and a loop over items
+stands where a kernel can run it."""
 
 import ast
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from functools import partial
 from types import FunctionType, NoneType
 
 from .arithmetic import combined, operated
-from .declarations import Declared, Kind, Returns, is_scalar, named
+from .declarations import Declared, Kind, NamedValue, Returns, is_scalar, named
 from .inference import Inference
+from .items import items, items_through
 from .reading import Reading
 from .scalars import ArrayOf
 
@@ -37,11 +39,14 @@ class Checker:
 
         An annotation fails when it is missing, contradicts another, or a cast repeats it.
         """
-        for node in self.reading.walk():
+        nodes = list(self.reading.walk())
+        self._check_items(nodes)
+        for node in nodes:
             if isinstance(node, ast.Return):
                 self._check_return(node)
             if isinstance(node, ast.Call):
                 self._check_arguments(node)
+                self._check_construction(node)
             self._check_conversion(node)
         self.reading.raise_issues()
 
@@ -56,6 +61,15 @@ class Checker:
                 f"`{ast.unparse(call.func)}`'s parameter",
                 argument,
             )
+
+    def _check_construction(self, call: ast.Call) -> None:
+        """Flag a named value built from arguments that do not fit its fields."""
+        if (built := self.reading.constructed(call)) is None:
+            return
+        try:
+            self.reading.fields(call, built)
+        except TypeError as error:
+            self.reading.issue(call, f"`{named(built)}`: {error}")
 
     def _check_conversion(self, node: ast.AST) -> None:
         """Flag `node` when it is a cast, or holds one, that something else already converts."""
@@ -87,6 +101,36 @@ class Checker:
                 self._operand(left, right, combined)
                 self._operand(right, left, combined)
 
+    def _check_item_loop(self, loop: ast.For, call: ast.Call) -> None:
+        """Flag a loop over items that no kernel can run.
+
+        It is `for name in items(bound)` with no `else`, and only a kernel holds it.
+        """
+        issues = {
+            "a device function takes its item as a parameter": not self.reading.kernel,
+            "an `items` loop names its item with one variable": not isinstance(
+                loop.target, ast.Name
+            ),
+            f"`{ast.unparse(call.func)}` takes one bound": bool(
+                call.keywords or len(call.args) != 1
+            ),
+            "an `items` loop takes no `else`": bool(loop.orelse),
+        }
+        for message, found in issues.items():
+            if found:
+                self.reading.issue(loop, message)
+
+    def _check_items(self, nodes: Sequence[ast.AST]) -> None:
+        """Flag an item call that is no `for` loop's iterable, and every loop that misuses one."""
+        looped = {id(call) for node in nodes if (call := self.reading.item_call(node))}
+        for node in nodes:
+            if self.reading.calls(node, items, items_through) and id(node) not in looped:
+                self.reading.issue(
+                    node, f"`{ast.unparse(node.func)}` is the iterable of a `for` loop"
+                )
+            elif isinstance(node, ast.For) and (call := self.reading.item_call(node)):
+                self._check_item_loop(node, call)
+
     def _check_return(self, node: ast.Return) -> None:
         returns, value = self.reading.returns, node.value
         if returns is NoneType:
@@ -96,6 +140,10 @@ class Checker:
             self.reading.issue(node, f"returns nothing where {named(returns)} is declared")
         elif isinstance(returns, tuple) and not self._returns_elements(value, returns):
             self.reading.issue(node, f"return the {len(returns)} elements so each converts")
+        elif isinstance(returns, NamedValue) and isinstance(value, ast.Tuple):
+            self.reading.issue(
+                node, f"return `{named(returns)}(...)` so the fields keep their names"
+            )
 
     def _converted_by(self, kind: Returns, converter: str, value: ast.expr) -> None:
         for branch in _branches(value):

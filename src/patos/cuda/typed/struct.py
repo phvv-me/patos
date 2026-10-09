@@ -10,7 +10,7 @@ import cupy as cp
 import numpy as np
 
 from .arguments import Argument, argument, record_argument
-from .declarations import Declared, Record, declared, is_scalar, named
+from .declarations import Declared, NamedValue, Record, declared, is_scalar, named
 from .decorators import Method
 from .kernels import Kernel
 from .scalars import ArrayOf, ConstantOf, converted
@@ -97,7 +97,10 @@ class Struct:
     def declarations(cls) -> dict[str, Declared]:
         """What each field declares, read once per record class."""
         annotations = annotationlib.get_annotations(cls)
-        return {name: declared(annotations[name]) for name in cls.__record_fields__}
+        fields = {name: declared(annotations[name]) for name in cls.__record_fields__}
+        if held := [name for name, kind in fields.items() if isinstance(kind, NamedValue)]:
+            raise TypeError(f"{cls.__name__}.{', '.join(held)} is a named value, not a field")
+        return fields
 
     @classmethod
     def of(cls, source: Mapping[str, Value] | Struct | BaseModel, **changes: Value) -> Self:

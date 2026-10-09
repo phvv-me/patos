@@ -14,6 +14,7 @@ from .declarations import (
     Evaluated,
     IntLiteral,
     Kind,
+    NamedValue,
     Record,
     is_integer,
     is_scalar,
@@ -54,13 +55,13 @@ class Inference:
             case ast.Name(id=name) if name in kinds:
                 return kinds[name]
             case ast.Attribute(value=ast.Name(id=name), attr=field) if isinstance(
-                record := kinds.get(name), Record
+                record := kinds.get(name), Record | NamedValue
             ):
                 kind = record.field(field)
                 return kind if kind is bool or is_scalar(kind) else None
             case ast.Subscript(
                 value=ast.Attribute(value=ast.Name(id=name), attr=field), slice=index
-            ) if isinstance(record := kinds.get(name), Record) and not isinstance(
+            ) if isinstance(record := kinds.get(name), Record | NamedValue) and not isinstance(
                 index, ast.Slice
             ):
                 array = record.field(field)
@@ -69,7 +70,7 @@ class Inference:
                 return self._constant(resolved(node, self.reading.namespace))
             case ast.Subscript(
                 value=ast.Name(id=name), slice=ast.Constant(value=int() as index)
-            ) if isinstance(elements := kinds.get(name), tuple):
+            ) if (elements := _elements(kinds.get(name))) is not None:
                 return _scalar_at(elements, index)
             case ast.Subscript(value=ast.Name(id=name), slice=index) if not isinstance(
                 index, ast.Slice
@@ -164,11 +165,14 @@ class Inference:
         """The type of element `index` of a tuple `value` unpacks into."""
         if isinstance(value, ast.Tuple) and index < len(value.elts):
             return self.kind(value.elts[index], kinds)
-        if isinstance(value, ast.Name) and isinstance(elements := kinds.get(value.id), tuple):
+        if (
+            isinstance(value, ast.Name)
+            and (elements := _elements(kinds.get(value.id))) is not None
+        ):
             return _scalar_at(elements, index)
         callee = self.reading.callee(value)
-        returns = callee.returns if callee is not None else None
-        return returns[index] if isinstance(returns, tuple) and index < len(returns) else None
+        elements = _elements(callee.returns) if callee is not None else None
+        return elements[index] if elements is not None and index < len(elements) else None
 
     def _inferred(self) -> dict[str, Declared]:
         """Return the type of every local: its declaration, else what its assignments agree on.
@@ -196,6 +200,13 @@ class Inference:
                 break
             kinds |= agreed
         return kinds
+
+
+def _elements(kind: Declared | type[None]) -> tuple[Declared, ...] | None:
+    """What each element of a tuple, or each field of a named value, declares."""
+    if isinstance(kind, NamedValue):
+        return kind.kinds()
+    return kind if isinstance(kind, tuple) else None
 
 
 def _scalar_at(elements: Sequence[Declared], index: int) -> Kind:

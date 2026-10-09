@@ -27,8 +27,16 @@ from numba.cuda.np.numpy_support import as_dtype
 from .arguments import argument
 from .checks import read
 from .declarations import is_scalar, named
-from .decorators import is_member
-from .rewrite import Rewrite
+from .decorators import is_member, made_for
+from .identity import (
+    block_count,
+    block_index,
+    thread_count,
+    thread_index,
+    warp_count,
+    warp_index,
+)
+from .rewrite import Helper, Items, Rewrite
 from .scalars import ArrayOf, converted
 
 if TYPE_CHECKING:
@@ -46,6 +54,11 @@ class Per(StrEnum):
     WARP = auto()
     BLOCK = auto()
 
+    def items(self, *, strided: bool) -> Items:
+        """Where this kind of item starts, and how far apart a kernel that strides finds them."""
+        first, stride = _IDENTITY[self]
+        return Items(first, stride if strided else None)
+
     def lanes(self, threads: int) -> int:
         """How many threads one item takes in a block of `threads`."""
         match self:
@@ -54,6 +67,13 @@ class Per(StrEnum):
             case Per.WARP:
                 return _WARP
         return threads
+
+
+_IDENTITY: dict[Per, tuple[Helper, Helper]] = {
+    Per.THREAD: (thread_index, thread_count),
+    Per.WARP: (warp_index, warp_count),
+    Per.BLOCK: (block_index, block_count),
+}
 
 
 class Kernel:
@@ -81,7 +101,9 @@ class Kernel:
     def bind(self, owner: type[Struct] | None, name: str) -> None:
         """Read and check the kernel, its `self` an `owner` record when it is a method."""
         reading = read(self.function, kernel=True, owner=owner)
-        self.dispatcher = cuda.jit(Rewrite(reading).rebuilt())
+        self.dispatcher = cuda.jit(
+            Rewrite(reading, self.per.items(strided=self.strided)).rebuilt()
+        )
         self.names = tuple(reading.parameters)
         self.declared = tuple(reading.parameters.values())
         self.converters = tuple(
@@ -141,7 +163,11 @@ class Kernel:
                 raise type(error)(f"{self.function.__qualname__}'s `{name}` {error}") from error
 
     def _compiled(self, kinds: tuple[types.Type, ...]) -> Compiled:
-        """The cuda.core kernel `kinds` compile to, once each array matches its declaration."""
+        """The cuda.core kernel `kinds` compile to.
+
+        Each array must match its declaration, and every device function made for a block size
+        must match the kernel's `threads`.
+        """
         for name, kind, given in zip(self.names, self.declared, kinds, strict=True):
             if not isinstance(kind, ArrayOf):
                 continue
@@ -155,8 +181,14 @@ class Kernel:
                 f"{self.function.__qualname__}'s `{name}` is {held}, "
                 f"where {named(kind)} is declared"
             )
+        library = self.dispatcher.compile(kinds)._codelibrary
+        if foreign := made_for(library) - {self.threads}:
+            raise TypeError(
+                f"{self.function.__qualname__} runs {self.threads} threads a block and calls "
+                f"device functions made for {', '.join(map(str, sorted(foreign)))}"
+            )
         # numba-cuda 0.30 keeps no public handle to a compiled kernel's cuda.core kernel.
-        compiled = self.dispatcher.compile(kinds)._codelibrary.get_cufunc().kernel
+        compiled = library.get_cufunc().kernel
         self.compiled[tuple(map(id, kinds))] = (kinds, compiled)
         return compiled
 

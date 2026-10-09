@@ -7,9 +7,14 @@ from patos import Registry
 
 # An extra's suite collects only where the extra is installed, so the core gate never imports
 # torch or the `cuda` extra; the CUDA host runtime needs numpy alone.
+_CUDA = ("numba_cuda", "cupy", "cuda")
 _EXTRAS = {
     "test_torch.py": ("numpy", "torch"),
-    "test_cuda_types.py": ("numba_cuda", "cupy", "cuda"),
+    "test_cuda_types.py": _CUDA,
+    "test_cuda_primitives.py": _CUDA,
+    "test_cuda_simd.py": _CUDA,
+    "test_cuda_bytewise.py": _CUDA,
+    "test_cuda_probe.py": _CUDA,
     "test_cuda_runtime.py": ("numpy",),
 }
 collect_ignore = [
