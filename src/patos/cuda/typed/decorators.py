@@ -21,7 +21,7 @@ from numba import cuda, types
 from numba.core.errors import TypingError
 from numba.cuda.codegen import CUDACodeLibrary
 from numba.cuda.dispatcher import CUDADispatcher
-from numba.cuda.np.numpy_support import as_dtype
+from numba.cuda.np import numpy_support
 
 from ..scalars import ArrayOf
 from .checks import read
@@ -199,7 +199,9 @@ def made_for(library: CUDACodeLibrary) -> set[int]:
 def _is_admitted(kind: Declared, given: types.Type) -> bool:
     """Whether `given` is a value of the array or named value `kind` declares, field by field."""
     if isinstance(kind, ArrayOf):
-        return isinstance(given, types.Array) and kind.admits(as_dtype(given.dtype), given.ndim)
+        return isinstance(given, types.Array) and kind.admits(
+            numpy_support.as_dtype(given.dtype), given.ndim
+        )
     if isinstance(kind, NamedValue):
         return (
             isinstance(given, types.BaseNamedTuple)

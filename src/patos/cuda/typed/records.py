@@ -4,21 +4,23 @@ operators and properties its class declares.
 A record is no tuple to Numba, so `len`, indexing and `in` mean only what its class declares.
 """
 
+import importlib
 import inspect
 import operator
+import pickle
 from collections.abc import Callable
-from functools import cache
+from functools import cache, reduce
 from typing import TYPE_CHECKING, ClassVar
 
 from llvmlite import ir
 from numba import types
 from numba.cuda import cgutils
-from numba.cuda.core.imputils import impl_ret_borrowed
+from numba.cuda.core import imputils
 from numba.cuda.cudadecl import registry as typing_registry
 from numba.cuda.cudaimpl import registry as lowering_registry
 from numba.cuda.dispatcher import CUDADispatcher
 from numba.cuda.extending import models, overload, register_model
-from numba.cuda.typing.templates import AttributeTemplate
+from numba.cuda.typing import templates
 
 from .members import Members
 
@@ -47,6 +49,16 @@ class RecordType(types.Type):
         held += [f"{name}={value!r}" for name, value in constants]
         super().__init__(f"{self.cls.__module__}.{self.cls.__qualname__}({', '.join(held)})")
 
+    def __reduce__(self) -> tuple:
+        """Rebuild as this record class, so a cached kernel loads with the types a launch builds.
+
+        A class made in a function is no class another process can find, and is refused.
+        """
+        if "<locals>" in self.cls.__qualname__:
+            raise pickle.PicklingError(f"{self.cls.__qualname__} is made in a function")
+        path = f"{self.cls.__module__}:{self.cls.__qualname__}"
+        return _restored, (path, self.fields, (*self.constants.items(),))
+
 
 class _Model(models.StructModel):
     def __init__(self, manager, record: RecordType) -> None:
@@ -54,7 +66,7 @@ class _Model(models.StructModel):
 
 
 @typing_registry.register_attr
-class _Fields(AttributeTemplate):
+class _Fields(templates.AttributeTemplate):
     key = RecordType
 
     def generic_resolve(self, record: RecordType, attr: str) -> types.Type | None:
@@ -71,7 +83,9 @@ def _field(context, builder: ir.IRBuilder, record: RecordType, value: ir.Value, 
         constant = record.constants[attr]
         return context.get_constant(types.literal(constant).literal_type, constant)
     fields = cgutils.create_struct_proxy(record)(context, builder, value=value)
-    return impl_ret_borrowed(context, builder, record.members[attr], getattr(fields, attr))
+    return imputils.impl_ret_borrowed(
+        context, builder, record.members[attr], getattr(fields, attr)
+    )
 
 
 # A record's class is the one its Numba type was made for.
@@ -84,6 +98,15 @@ def record_type(cls: type[Struct]) -> type[RecordType]:
     kind = type(f"{cls.__name__}Type", (RecordType,), {"cls": cls})
     register_model(kind)(_Model)
     return kind
+
+
+def _restored(
+    path: str, fields: tuple[tuple[str, types.Type], ...], constants: tuple
+) -> RecordType:
+    """The type of the record class at `module:qualname` over `fields` and `constants`."""
+    module, _, qualname = path.partition(":")
+    cls = reduce(getattr, qualname.split("."), importlib.import_module(module))
+    return record_type(cls)(fields, constants)
 
 
 def register_member(

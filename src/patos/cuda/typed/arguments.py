@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 import cupy as cp
 import numpy as np
 from numba import types
-from numba.cuda.np.numpy_support import from_dtype
+from numba.cuda.np import numpy_support
 
 from .records import RecordType, record_type
 
@@ -58,7 +58,7 @@ def record_argument(
 _records: dict[tuple, RecordType] = {}
 _SCALARS: dict[type, types.Type] = {
     bool: types.boolean, int: types.int64, float: types.float64,
-    **{kind: from_dtype(np.dtype(kind)) for kind in (
+    **{kind: numpy_support.from_dtype(np.dtype(kind)) for kind in (
         np.bool_, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32,
         np.uint64, np.float16, np.float32, np.float64, np.complex64, np.complex128,
     )},
@@ -109,7 +109,7 @@ def _array(value: cp.ndarray | _Interfaced) -> Argument:
 
 @cache
 def _array_type(dtype: np.dtype, ndim: int, contiguous: bool) -> types.Array:
-    return types.Array(from_dtype(dtype), ndim, "C" if contiguous else "A")
+    return types.Array(numpy_support.from_dtype(dtype), ndim, "C" if contiguous else "A")
 
 
 def _contiguous_strides(shape: tuple[int, ...], itemsize: int) -> tuple[int, ...]:

@@ -9,6 +9,10 @@ A launch converts every scalar to the type its parameter declares and hands cuda
 arguments marshalled by hand, on the current CuPy stream. Arrays are contiguous and scalars arrive
 at their declared types, so a kernel compiles once, or once per dtype an open element
 (`Vector[unsigned]`) meets; an array of another element, dimension count or layout is refused.
+
+A kernel compiles once for the sources it is made of and the host it runs on. The first process,
+cold with an empty cache, compiles and keeps it in the user's cache directory, and each later one,
+warm, loads it (`kernelcache`); a source edited anywhere moves the cache, so none loads stale.
 """
 
 from collections.abc import Callable
@@ -21,8 +25,8 @@ from typing import TYPE_CHECKING, cast, overload
 from cuda.core import Kernel as Compiled
 from cuda.core import LaunchConfig, Stream, launch
 from cupy.cuda import get_current_stream
-from numba import cuda, types
-from numba.cuda.np.numpy_support import as_dtype
+from numba import types
+from numba.cuda.np import numpy_support
 
 from ..scalars import ArrayOf, converted
 from . import shims
@@ -37,6 +41,7 @@ from .identity import (
     warp_count,
     warp_index,
 )
+from .kernelcache import Persistent
 from .rewrite import Helper, Items, Rewrite
 
 if TYPE_CHECKING:
@@ -103,7 +108,7 @@ class Kernel:
     def bind(self, owner: type[Struct] | None, name: str) -> None:
         """Read and check the kernel, its `self` an `owner` record when it is a method."""
         reading = read_bound(self.function, kernel=True, owner=owner)
-        self.dispatcher = cuda.jit(
+        self.dispatcher = Persistent(
             Rewrite(reading, self.per.items(strided=self.strided)).rebuilt()
         )
         self.names = tuple(reading.parameters)
@@ -174,7 +179,7 @@ class Kernel:
             if not isinstance(kind, ArrayOf):
                 continue
             admitted = isinstance(given, types.Array) and kind.admits(
-                as_dtype(given.dtype), given.ndim
+                numpy_support.as_dtype(given.dtype), given.ndim
             )
             if admitted and given.layout == "C":
                 continue
@@ -183,8 +188,9 @@ class Kernel:
                 f"{self.function.__qualname__}'s `{name}` is {held}, "
                 f"where {named(kind)} is declared"
             )
-        library = self.dispatcher.compile(kinds)._codelibrary
+        library = self.dispatcher.compile(kinds).library
         if foreign := made_for(library) - {self.threads}:
+            self.dispatcher.forget()
             raise TypeError(
                 f"{self.function.__qualname__} runs {self.threads} threads a block and calls "
                 f"device functions made for {', '.join(map(str, sorted(foreign)))}"
