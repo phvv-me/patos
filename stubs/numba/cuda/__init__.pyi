@@ -5,13 +5,14 @@ reads `cuda.threadIdx.x` as a `property` and `cuda.syncthreads()` as missing its
 Here each takes and returns what its compiled call does, in patos's numeric types: a scalar is an
 `int` or a `float`, and an array is a `Numeric`, which device code spells `Vector` or `Matrix`, so
 `shared.array(n, i32)` is a `Vector[i32]`. A dtype is the element's class (`i32`, `np.uint64`,
-`type(value)`). The vector types (`float32x4`, ...) numba sets on the module at import are left
-out. The host API is numba's own, re-exported as its modules type it.
+`type(value)`) or a numba type (`numba.float32`). The vector types (`float32x4`, ...) numba sets on
+the module at import are left out. The host API is numba's own, re-exported as its modules type it.
 """
 
 from collections.abc import Callable, Sequence
-from typing import Any, Final, Literal, Protocol, TypedDict, Unpack, overload, type_check_only
+from typing import Final, Literal, Never, Protocol, TypedDict, Unpack, overload, type_check_only
 
+import numpy as np
 from numba.core.types import Type
 from numba.core.typing import Signature
 
@@ -120,30 +121,57 @@ def gridsize(ndim: Literal[2]) -> tuple[int, int]: ...
 @overload
 def gridsize(ndim: Literal[3]) -> tuple[int, int, int]: ...
 
+# What an array holds: the numbers of Python and of numpy.
+type _Element = int | float | complex | np.number | np.bool_
+
+@type_check_only
+class _NumbaType[T](Protocol):
+    """A numba type (`numba.float32`), which casts a value to the element `T`."""
+
+    def cast_python_value(self, value: Never, /) -> T: ...
+
 @type_check_only
 class _MemorySpace:
     """`shared` or `local`: an array of a constant shape, one per block or one per thread.
 
-    The element defaults to `Any` only where a checker cannot read it off `dtype`: pyrefly reads
-    `type(value)` of a constrained type parameter as a bare `type`, and would otherwise pin the
-    element to whatever the array's first use expects.
+    The element is what calling the dtype makes (`i32(0)` an `int`, `np.uint64(0)` a `np.uint64`)
+    and not a `type[T]` parameter. pyrefly reads `type(value)` of a type parameter as the bare
+    `type`, which `type[T]` solves from the array's first use: `Vector[number]` there makes `T` a
+    `float`. Called, the bare `type` answers `Any`, so pyrefly leaves that element untyped and ty
+    reads it as `T`. A numba type is called to make a signature, so it is read apart, by its cast.
     """
 
     @overload
-    def array[T = Any](
-        self, shape: int | tuple[int], dtype: type[T], alignment: int | None = None
+    def array[T: _Element](
+        self, shape: int | tuple[int], dtype: _NumbaType[T], alignment: int | None = None
     ) -> Numeric[T, int]: ...
     @overload
-    def array[T = Any](
-        self, shape: tuple[int, int], dtype: type[T], alignment: int | None = None
+    def array[T: _Element](
+        self, shape: int | tuple[int], dtype: Callable[..., T], alignment: int | None = None
+    ) -> Numeric[T, int]: ...
+    @overload
+    def array[T: _Element](
+        self, shape: tuple[int, int], dtype: _NumbaType[T], alignment: int | None = None
     ) -> Numeric[T, int, int]: ...
     @overload
-    def array[T = Any](
-        self, shape: tuple[int, int, int], dtype: type[T], alignment: int | None = None
+    def array[T: _Element](
+        self, shape: tuple[int, int], dtype: Callable[..., T], alignment: int | None = None
+    ) -> Numeric[T, int, int]: ...
+    @overload
+    def array[T: _Element](
+        self, shape: tuple[int, int, int], dtype: _NumbaType[T], alignment: int | None = None
     ) -> Numeric[T, int, int, int]: ...
     @overload
-    def array[T = Any](
-        self, shape: tuple[int, ...], dtype: type[T], alignment: int | None = None
+    def array[T: _Element](
+        self, shape: tuple[int, int, int], dtype: Callable[..., T], alignment: int | None = None
+    ) -> Numeric[T, int, int, int]: ...
+    @overload
+    def array[T: _Element](
+        self, shape: tuple[int, ...], dtype: _NumbaType[T], alignment: int | None = None
+    ) -> Numeric[T, *tuple[int, ...]]: ...
+    @overload
+    def array[T: _Element](
+        self, shape: tuple[int, ...], dtype: Callable[..., T], alignment: int | None = None
     ) -> Numeric[T, *tuple[int, ...]]: ...
 
 @type_check_only
@@ -155,23 +183,34 @@ local: Final[_MemorySpace]
 const: Final[_ConstantSpace]
 
 @type_check_only
-class _Atomics:
-    """Each updates `ary[idx]` in one indivisible step and returns the element it replaced."""
-
+class _Arithmetic:
     def add[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
-    def and_[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
-    def cas[T, *S](self, ary: Numeric[T, *S], idx: _Index, old: T, val: T) -> T: ...
-    def compare_and_swap[T](self, ary: Numeric[T, int], old: T, val: T) -> T: ...
     def dec[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
-    def exch[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
     def inc[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
+    def sub[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
+
+@type_check_only
+class _Extremes:
     def max[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
     def min[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
     def nanmax[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
     def nanmin[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
+
+@type_check_only
+class _Bitwise:
+    def and_[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
     def or_[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
-    def sub[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
     def xor[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
+
+@type_check_only
+class _Exchange:
+    def cas[T, *S](self, ary: Numeric[T, *S], idx: _Index, old: T, val: T) -> T: ...
+    def compare_and_swap[T](self, ary: Numeric[T, int], old: T, val: T) -> T: ...
+    def exch[T, *S](self, ary: Numeric[T, *S], idx: _Index, val: T) -> T: ...
+
+@type_check_only
+class _Atomics(_Arithmetic, _Extremes, _Bitwise, _Exchange):
+    """Each updates `ary[idx]` in one indivisible step and returns the element it replaced."""
 
 atomic: Final[_Atomics]
 

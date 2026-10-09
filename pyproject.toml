@@ -208,6 +208,11 @@ exclude = ["src/patos/cuda/primitives/__init__.py", "src/patos/cuda/primitives/h
 [tool.mcmr.rules."PY-IMPO0005"]
 exclude = ["tests/test_cuda_types.py"]
 
+# The type fixtures sit in a directory named `typing`, which reads `from typing import assert_type`
+# as an import of the package's own.
+[tool.mcmr.rules."PY-IMPO0001"]
+exclude = ["typing/**"]
+
 # A declared tuple type is a tuple reading that `isinstance` tells from every other, and
 # `Signature` is frozen, as are the parameter types that key a dispatched name's implementations:
 # these tuples are the domain, not a choice of collection.
@@ -289,8 +294,7 @@ exclude = [
   "tests/test_cuda_types.py",
 ]
 
-# The same, counted in statements, and the numba stubs, which declare all of numba-cuda's
-# `numba.cuda`.
+# The same, counted in statements, and the numba stubs (see ALL-MODU0002 below).
 [tool.mcmr.rules."ALL-MODU0006"]
 exclude = [
   "stubs/**",
@@ -326,7 +330,8 @@ exclude = ["src/patos/cuda/typed/cxx.py"]
 
 # Each lane operation and each warp reduction is one name over an implementation per type, and
 # the stub type checkers read, kept beside each other. The numba stubs declare numba-cuda's whole
-# `numba.cuda`.
+# `numba.cuda` namespace in the one module a checker reads it from: ty reads a stub submodule of
+# it as `Any`, since its `replace-imports-with-any` above names `numba.cuda.*`.
 [tool.mcmr.rules."ALL-MODU0002"]
 exclude = ["src/patos/cuda/primitives/bits.py", "src/patos/cuda/primitives/warp.py", "stubs/**"]
 
@@ -339,12 +344,14 @@ ignore_names = ["met"]
 [tool.mcmr.rules."PY-MODU0002"]
 exclude = ["src/patos/cuda/__init__.py"]
 
-# The numba stubs type numba-cuda's API as it stands: its fourteen atomics, its names (`all_sync`
-# answers a Boolean), its `shape` tuples and the `bool | None` options that defer to its
-# configuration.
-[tool.mcmr.rules."ALL-CLAS0003"]
-exclude = ["stubs/**"]
+# The stub of `numba.cuda` sits where the module path puts it, `stubs/numba/cuda`, which leaves
+# `stubs/numba` holding nothing but that directory.
+[tool.mcmr.rules."ALL-FILE0004"]
+exclude = ["stubs/numba"]
 
+# The numba stubs type numba-cuda's API as it stands: its names (`all_sync` answers a Boolean), its
+# `shape` tuples, whose length is the rank of the array they allocate, and the `bool | None`
+# options that defer to its configuration.
 [tool.mcmr.rules."PY-COLL0001"]
 exclude = ["stubs/**"]
 
