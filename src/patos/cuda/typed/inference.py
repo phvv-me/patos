@@ -47,11 +47,11 @@ class Inference:
             case ast.Constant(value=bool()):
                 return bool
             case ast.Constant(value=int() as value):
-                return IntLiteral(value)
+                return IntLiteral(value=value)
             case ast.UnaryOp(op=ast.USub(), operand=ast.Constant(value=int() as value)) if (
                 not isinstance(value, bool)
             ):
-                return IntLiteral(-value)
+                return IntLiteral(value=-value)
             case ast.Name(id=name) if name in kinds:
                 return kinds[name]
             case ast.Attribute(value=ast.Name(id=name), attr=field) if isinstance(
@@ -94,7 +94,7 @@ class Inference:
                     and isinstance(right, IntLiteral)
                     and type(op) in _FOLDED
                 ):
-                    return IntLiteral(_FOLDED[type(op)](left.value, right.value))
+                    return IntLiteral(value=_FOLDED[type(op)](left.value, right.value))
                 return operated(op, left, right)
             case ast.Compare() | ast.UnaryOp(op=ast.Not()):
                 return bool

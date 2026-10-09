@@ -56,7 +56,7 @@ class Per(StrEnum):
     def items(self, *, strided: bool) -> Items:
         """Where this kind of item starts, and how far apart a kernel that strides finds them."""
         first, stride = _IDENTITY[self]
-        return Items(first, stride if strided else None)
+        return Items(first=first, stride=stride if strided else None)
 
     def lanes(self, threads: int) -> int:
         """How many threads one item takes in a block of `threads`."""

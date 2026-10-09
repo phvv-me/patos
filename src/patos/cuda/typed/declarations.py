@@ -7,7 +7,6 @@ readings of a function also know an int literal, which takes the type of the int
 
 import annotationlib
 from collections.abc import Callable
-from dataclasses import dataclass
 from types import GenericAlias, ModuleType
 from typing import (
     Protocol,
@@ -23,61 +22,16 @@ from typing import (
 import numpy as np
 from numba import types
 
+from ...bases import FrozenModel, Runtime
 from ..scalars import SPELLINGS, ArrayOf, ConstantOf, Lanes, canonical
 from .lanes import lane_type
 
 
-@final
-@dataclass(frozen=True)
-class IntLiteral:
-    """An int constant written in the function body, taking the type of the integer it meets."""
-
-    value: int
-
-
-@final
-@dataclass(frozen=True)
-class Record:
-    """A `Struct` annotation."""
-
-    cls: type[_Recorded]
-
-    def field(self, name: str) -> Declared:
-        """What field `name` declares, None for a name the record lacks."""
-        return self.cls.declarations().get(name)
-
-
-@final
-@dataclass(frozen=True)
-class NamedValue:
-    """A `typing.NamedTuple` annotation: a value that travels as one, its fields declared."""
-
-    cls: type[tuple]
-    fields: tuple[tuple[str, Declared], ...]
+class _Recorded(Protocol):
+    __record_fields__: tuple[str, ...]
 
     @classmethod
-    def of(cls, value: Subject) -> Self | None:
-        """The named value `value` declares, None unless it is a `NamedTuple` of device fields."""
-        if not (
-            isinstance(value, type)
-            and issubclass(value, tuple)
-            and hasattr(value, "__match_args__")
-        ):
-            return None
-        kinds: dict[str, Declared] = {
-            name: declared(kind) for name, kind in annotationlib.get_annotations(value).items()
-        }
-        if None in kinds.values() or any(isinstance(kind, ConstantOf) for kind in kinds.values()):
-            return None
-        return cls(value, tuple(kinds.items()))
-
-    def field(self, name: str) -> Declared:
-        """What field `name` declares, None for a name the value lacks."""
-        return dict(self.fields).get(name)
-
-    def kinds(self) -> tuple[Declared, ...]:
-        """What each field declares, in order."""
-        return tuple(kind for _, kind in self.fields)
+    def declarations(cls) -> dict[str, Declared]: ...
 
 
 # What a name in a function's globals or closure, or an annotation, evaluates to; a name not yet
@@ -107,19 +61,61 @@ type Subject = Evaluated | Returns
 
 
 @final
-@dataclass(frozen=True)
-class Signature:
-    """What a compiled device function declares, for its callers' checks."""
+class IntLiteral(FrozenModel):
+    """An int constant written in the function body, taking the type of the integer it meets."""
 
-    parameters: tuple[Declared, ...]
-    returns: Returns
+    value: int
 
 
-class _Recorded(Protocol):
-    __record_fields__: tuple[str, ...]
+@final
+class Record(FrozenModel):
+    """A `Struct` annotation."""
+
+    cls: Runtime[type[_Recorded]]
+
+    def field(self, name: str) -> Declared:
+        """What field `name` declares, None for a name the record lacks."""
+        return self.cls.declarations().get(name)
+
+
+@final
+class NamedValue(FrozenModel):
+    """A `typing.NamedTuple` annotation: a value that travels as one, its fields declared."""
+
+    cls: type[tuple]
+    fields: Runtime[tuple[tuple[str, Declared], ...]]
 
     @classmethod
-    def declarations(cls) -> dict[str, Declared]: ...
+    def of(cls, value: Subject) -> Self | None:
+        """The named value `value` declares, None unless it is a `NamedTuple` of device fields."""
+        if not (
+            isinstance(value, type)
+            and issubclass(value, tuple)
+            and hasattr(value, "__match_args__")
+        ):
+            return None
+        kinds: dict[str, Declared] = {
+            name: declared(kind) for name, kind in annotationlib.get_annotations(value).items()
+        }
+        if None in kinds.values() or any(isinstance(kind, ConstantOf) for kind in kinds.values()):
+            return None
+        return cls(cls=value, fields=tuple(kinds.items()))
+
+    def field(self, name: str) -> Declared:
+        """What field `name` declares, None for a name the value lacks."""
+        return dict(self.fields).get(name)
+
+    def kinds(self) -> tuple[Declared, ...]:
+        """What each field declares, in order."""
+        return tuple(kind for _, kind in self.fields)
+
+
+@final
+class Signature(FrozenModel):
+    """What a compiled device function declares, for its callers' checks."""
+
+    parameters: Runtime[tuple[Declared, ...]]
+    returns: Runtime[Returns]
 
 
 def is_scalar(kind: Subject) -> TypeIs[type[np.number]]:
@@ -161,7 +157,7 @@ def declared(value: Evaluated) -> Declared:
     if value is bool or isinstance(value, ArrayOf | ConstantOf | Lanes):
         return value
     if _is_record(value):
-        return Record(value)
+        return Record(cls=value)
     if (named_value := NamedValue.of(value)) is not None:
         return named_value
     if is_scalar(value):

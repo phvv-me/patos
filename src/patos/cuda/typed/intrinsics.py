@@ -5,11 +5,14 @@ argument to its declared scalar type, and the checks read the stub's signature. 
 names its output `$result` and its inputs by the stub's parameter names, and each operand's
 register constraint follows from its type. A stub returns a scalar, a tuple of scalars (`$result`
 is then the vector `{a, b}` of registers the PTX fills, and `$result0`, `$result1` the registers
-alone) or `None` for an effect such as a store. Warp collectives stay where they are written,
-since a template runs as an effect unless declared `pure`.
+alone) or `None` for an effect such as a store. A template of register arithmetic alone is pure,
+so the compiler may merge or move it; any other, such as a load, a store, an atomic, a barrier, a
+warp collective (`*.sync`) or a read of a special register (`%laneid`), runs as an effect where it
+is written, and so does an instruction patos does not know.
 """
 
 import inspect
+import re
 from collections.abc import Callable, Sequence
 from string import Template
 from types import FunctionType, NoneType
@@ -30,14 +33,20 @@ _REGISTERS = {
     types.int16: "h", types.uint16: "h", types.int32: "r", types.uint32: "r",
     types.int64: "l", types.uint64: "l", types.float32: "f", types.float64: "d",
 }  # fmt: skip
+# The opcodes that compute registers from registers and immediates alone.
+_ARITHMETIC = frozenset({
+    "abs", "add", "and", "bfe", "bfi", "bfind", "brev", "clz", "cvt", "dp2a", "dp4a", "lop3",
+    "mad", "max", "min", "mov", "mul", "neg", "not", "or", "popc", "prmt", "sad", "selp", "setp",
+    "shf", "shl", "shr", "sub", "vabsdiff2", "vabsdiff4", "xor",
+})  # fmt: skip
+# A statement's optional label and predicate guard, and the opcode they precede.
+_STATEMENT = re.compile(r"^(?:\w+:\s*)?(?:@!?\w+\s+)?([\w.]+)")
 
 
-def ptx[F: FunctionType](template: str, *, pure: bool = False) -> Callable[[F], F]:
+def ptx[F: FunctionType](template: str) -> Callable[[F], F]:
     """Make an annotated stub a device function running the PTX `template`.
 
     template: PTX naming the output `$result` and each input `$<parameter>`.
-    pure: the PTX only computes its output from its inputs, so the compiler may merge or move it;
-        a warp collective is never pure.
     """
 
     def defined(stub: F) -> F:
@@ -45,10 +54,11 @@ def ptx[F: FunctionType](template: str, *, pure: bool = False) -> Callable[[F], 
         outputs = _outputs(typed.return_type)
         constraints = _constraints(stub, outputs, typed)
         text = Template(template).substitute(_operands(stub, len(outputs)))
+        effect = not (outputs and is_pure(template))
 
         def lowered(context, builder: ir.IRBuilder, call, arguments: list[ir.Value]) -> ir.Value:
             assembly = ir.InlineAsm(
-                _function_type(context, outputs, call), text, constraints, side_effect=not pure
+                _function_type(context, outputs, call), text, constraints, side_effect=effect
             )
             value = builder.call(assembly, arguments)
             if isinstance(call.return_type, types.BaseTuple):
@@ -56,9 +66,23 @@ def ptx[F: FunctionType](template: str, *, pure: bool = False) -> Callable[[F], 
                 return context.make_tuple(builder, call.return_type, parts)
             return value if outputs else context.get_dummy_value()
 
-        return as_intrinsic(stub, signature, typed, lowered)
+        compiled = as_intrinsic(stub, signature, typed, lowered)
+        compiled.__dict__["template"] = template
+        return compiled
 
     return defined
+
+
+def is_pure(template: str) -> bool:
+    """Whether every instruction of the PTX `template` is register arithmetic.
+
+    Each is an opcode of `_ARITHMETIC` over registers and immediates, reading no special register.
+    """
+    statements = [part.strip(" \t\n{}") for part in template.split(";")]
+    found = [_STATEMENT.match(part) for part in statements if part and not part.startswith(".")]
+    return "%" not in template and all(
+        match is not None and match[1].split(".")[0] in _ARITHMETIC for match in found
+    )
 
 
 def read_stub(stub: FunctionType) -> tuple[Signature, templates.Signature]:
@@ -75,7 +99,7 @@ def read_stub(stub: FunctionType) -> tuple[Signature, templates.Signature]:
         raise AnnotationError(
             f"{stub.__qualname__}: a parameter or the return declares no scalar, tuple or None"
         )
-    return Signature(tuple(kinds), returns), result(*typed)
+    return Signature(parameters=tuple(kinds), returns=returns), result(*typed)
 
 
 def _outputs(returns: types.Type) -> list[types.Type]:

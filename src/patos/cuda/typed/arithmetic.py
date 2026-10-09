@@ -87,7 +87,7 @@ def met(left: types.Type, right: types.Type) -> types.Integer | None:
 def _kind_of(value: types.Type) -> Kind:
     """What the checker calls a Numba type: an int literal's value, or an integer's NumPy type."""
     if isinstance(value, types.IntegerLiteral):
-        return IntLiteral(value.literal_value)
+        return IntLiteral(value=value.literal_value)
     if isinstance(value, types.Integer):
         return np.dtype(f"{'i' if value.signed else 'u'}{value.bitwidth // 8}").type
     return None

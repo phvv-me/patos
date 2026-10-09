@@ -6,7 +6,7 @@ import ast
 import inspect
 import textwrap
 from collections.abc import Callable, Iterator, Mapping, MutableMapping
-from types import FunctionType, NoneType
+from types import CellType, FunctionType, NoneType
 from typing import TypeIs, TypeVar
 
 import numpy as np
@@ -27,6 +27,9 @@ from .declarations import (
 )
 from .items import items, items_through
 
+# A cell no value is stored in yet; cells compare by what they hold, an empty one equal to it.
+_EMPTY = CellType()
+
 
 class AnnotationError(TypeError):
     """A device function or kernel whose annotations are incomplete or contradict each other, or
@@ -46,8 +49,12 @@ class Reading:
         self.function = function
         self.kernel = kernel
         self.owner = owner
-        # A member's annotations may name the record it is defined in, before the module does.
-        self.members = {} if owner is None else {owner.__name__: owner}
+        # Annotations also read the record a member is defined in, before the module names it, and
+        # what `__annotate__` closes over (PEP 649): a name only an annotation uses lives there.
+        annotate = function.__annotate__
+        self.members = (_cells(annotate) if isinstance(annotate, FunctionType) else {}) | (
+            {} if owner is None else {owner.__name__: owner}
+        )
         self.tree, self.definition = self._parsed(function)
         self.namespace = self._namespace(function)
         # Device code is generic over type variables only, its own and its record's.
@@ -68,7 +75,7 @@ class Reading:
         if not isinstance(node, ast.Call):
             return None
         if (built := self.constructed(node)) is not None:
-            return Signature(built.kinds(), built)
+            return Signature(parameters=built.kinds(), returns=built)
         # A dispatcher keeps the signature on the function it compiles, an intrinsic on itself.
         callee = resolved(node.func, self.namespace)
         return getattr(getattr(callee, "py_func", callee), "device_signature", None)
@@ -151,11 +158,12 @@ class Reading:
 
     @staticmethod
     def _namespace(function: FunctionType) -> dict[str, Evaluated]:
-        """The globals of `function`, with the cells it closes over when it has any."""
-        if not function.__closure__:
-            return function.__globals__
-        cells = zip(function.__code__.co_freevars, function.__closure__, strict=True)
-        return {**function.__globals__, **{name: cell.cell_contents for name, cell in cells}}
+        """The globals of `function`, with the cells it closes over when it has any.
+
+        Without them it is the module's own globals, so a name the module defines later resolves.
+        """
+        cells = _cells(function)
+        return {**function.__globals__, **cells} if cells else function.__globals__
 
     @staticmethod
     def _parsed(function: FunctionType) -> tuple[ast.Module, ast.FunctionDef]:
@@ -253,6 +261,14 @@ class Reading:
 def is_convertible(kind: Subject) -> TypeIs[type[np.number] | Lanes]:
     """Whether a value converts to `kind` by a cast: a scalar type or packed lanes."""
     return is_scalar(kind) or isinstance(kind, Lanes)
+
+
+def _cells(function: FunctionType) -> dict[str, Evaluated]:
+    """What `function` closes over, by name; a cell its scope has not filled yet is left out."""
+    if not function.__closure__:
+        return {}
+    cells = zip(function.__code__.co_freevars, function.__closure__, strict=True)
+    return {name: cell.cell_contents for name, cell in cells if cell != _EMPTY}
 
 
 def resolved(node: ast.expr, namespace: dict[str, Evaluated]) -> Evaluated:

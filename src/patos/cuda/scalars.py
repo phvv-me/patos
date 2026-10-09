@@ -4,12 +4,17 @@ one dimension of the numeric type `T` and `Matrix[T]` one of two, as numba spell
 `int16[:, :]`: `Vector[u8]`, `Matrix[i16]`.
 
 `number` and `unsigned` are open element types, for an array whose element is any number or any
-unsigned integer (`Vector[unsigned]`). `u8x4`, `i8x4`, `u16x2` and `i16x2` are packed lanes, a
-32-bit register read as four bytes or two halves, which `primitives.bits` picks its instruction by.
+unsigned integer (`Vector[unsigned]`), and so is a type parameter (`Vector[T]`), which a checker
+reads as the parameter, so that two arrays of one `T` hold one type. `u8x4`, `i8x4`, `u16x2` and
+`i16x2` are packed lanes, a 32-bit register read as four bytes or two halves, which
+`primitives.bits` picks its instruction by.
+
+A type checker reads the scalars as Python's `int` and `float`, since patos converts integers into
+one another as C does, which no checker models. So the checker cannot tell `Vector[u8]` from
+`Vector[u32]`, or `u8` from `i32`; patos refuses the wrong one where a kernel compiles or launches.
 """
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, Self, SupportsInt, cast, final, overload
+from typing import TYPE_CHECKING, Protocol, Self, SupportsInt, TypeVar, cast, final, overload
 
 import numpy as np
 
@@ -25,7 +30,8 @@ _CONCRETE = {*np.sctypeDict.values()}
 # How patos spells the numpy types it names, in messages as in annotations.
 SPELLINGS: dict[type, str] = {
     np.int16: "i16", np.int32: "i32", np.int64: "i64", np.uint8: "u8", np.uint16: "u16",
-    np.uint32: "u32", np.uint64: "u64", np.unsignedinteger: "unsigned", np.number: "number",
+    np.uint32: "u32", np.uint64: "u64", np.float32: "f32", np.float64: "f64",
+    np.unsignedinteger: "unsigned", np.number: "number",
 }  # fmt: skip
 
 
@@ -40,8 +46,7 @@ class Shaped(Protocol):
 
 
 @final
-@dataclass(frozen=True)
-class ArrayOf:
+class ArrayOf(FrozenModel):
     """An array annotation: its element type, concrete or open, and its dimension count.
 
     An array is contiguous, so every kernel compiles one signature.
@@ -204,38 +209,23 @@ if TYPE_CHECKING:
 
     class i16x2(Packed): ...
 
-    type Vector[T: Numeric] = Numeric[T, int]
-    type Matrix[T: Numeric] = Numeric[T, int, int]
+    type Vector[T] = Numeric[T, int]
+    type Matrix[T] = Numeric[T, int, int]
 
-    class Scalar[T](Numeric[T]):
-        def __new__(cls, value: SupportsInt = 0) -> Self: ...
-
-    # A type called converts to its scalar, which an array's elements are as well.
-    class u8(Scalar["u8"]): ...
-
-    class u16(Scalar["u16"]): ...
-
-    class u32(Scalar["u32"]): ...
-
-    class u64(Scalar["u64"]): ...
-
-    class i16(Scalar["i16"]): ...
-
-    class i32(Scalar["i32"]): ...
-
-    class i64(Scalar["i64"]): ...
-
-    class unsigned(Numeric["unsigned"]): ...
-
-    class number(Numeric["number"]): ...
+    # Integers meet as C's do, each converting to every other on assignment, call and return,
+    # which no checker models, so a checker reads the scalars as Python's own numbers.
+    u8 = u16 = u32 = u64 = i16 = i32 = i64 = unsigned = int
+    f32 = f64 = number = float
 
 else:
 
     def _array(name: str, ndim: int) -> type:
         def __class_getitem__(cls, element):
+            if isinstance(element, TypeVar):
+                return ArrayOf(element=np.number, ndim=ndim)
             if not (isinstance(element, type) and issubclass(element, np.number)):
                 raise TypeError(f"{name}[{element!r}]: an array holds a numeric type")
-            return ArrayOf(canonical(element), ndim)
+            return ArrayOf(element=canonical(element), ndim=ndim)
 
         return type(name, (), {"__class_getitem__": __class_getitem__, "__module__": __name__})
 
@@ -261,6 +251,7 @@ else:
 
     u8, u16, u32, u64 = (_numeric(f"u{n}", getattr(np, f"uint{n}")) for n in (8, 16, 32, 64))
     i16, i32, i64 = (_numeric(f"i{n}", getattr(np, f"int{n}")) for n in (16, 32, 64))
+    f32, f64 = (_numeric(f"f{n}", getattr(np, f"float{n}")) for n in (32, 64))
     unsigned, number = _numeric("unsigned", np.unsignedinteger), _numeric("number", np.number)
     u8x4, i8x4, u16x2, i16x2 = (
         Lanes(name=name, element=element)
@@ -276,8 +267,8 @@ else:
 # What arithmetic meets a numeric value with, what an array stores and what indexes it, read
 # lazily, so a type checker's names stand in them.
 type Operand = int | np.integer | Shaped | Numeric
-type Stored = Operand | Packed
-type Subscript = int | np.integer | u8 | u16 | u32 | u64 | i16 | i32 | i64
+type Stored = Operand | float | Packed
+type Subscript = int | np.integer
 
 
 def canonical(kind: type[np.number]) -> type[np.number]:

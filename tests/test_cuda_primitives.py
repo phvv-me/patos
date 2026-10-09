@@ -1,6 +1,7 @@
-"""The warp, block, scalar and search primitives, each against a host reference."""
+"""The warp, block and search primitives, each against a host reference."""
 
 import bisect
+import re
 from collections.abc import Callable, Sequence
 from functools import cache
 
@@ -9,8 +10,10 @@ import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from numba.core.errors import TypingError
+from numba.np.numpy_support import as_dtype
 
-from patos.cuda.primitives import block, scalar, search, warp
+from patos.cuda.primitives import block, integers, search, warp
 from patos.cuda.typed import (
     Kernel,
     Matrix,
@@ -26,9 +29,26 @@ from patos.cuda.typed import (
     thread_index,
     u8,
     u32,
+    u64,
 )
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
+
+_NUMBERS = [np.int32, np.uint32, np.int64, np.uint64, np.float32, np.float64]
+# Each reduction's host reference over the values of one warp or block.
+_REFERENCES: dict[str, Callable[[np.ndarray], np.generic]] = {
+    "sum": lambda values: values.sum(dtype=values.dtype), "min": np.min, "max": np.max,
+    "and_": np.bitwise_and.reduce, "or_": np.bitwise_or.reduce, "xor": np.bitwise_xor.reduce,
+}  # fmt: skip
+# Each reduction over each type it takes: any number, or an unsigned word for the bitwise ones.
+_CASES = [
+    ("sum", np.int32), ("sum", np.uint32), ("sum", np.int64), ("sum", np.uint64),
+    ("sum", np.float32), ("sum", np.float64), ("min", np.int32), ("min", np.uint32),
+    ("min", np.int64), ("min", np.uint64), ("min", np.float32), ("min", np.float64),
+    ("max", np.int32), ("max", np.uint32), ("max", np.int64), ("max", np.uint64),
+    ("max", np.float32), ("max", np.float64), ("and_", np.uint32), ("and_", np.uint64),
+    ("or_", np.uint32), ("or_", np.uint64), ("xor", np.uint32), ("xor", np.uint64),
+]  # fmt: skip
 
 
 def ints(kind: type[np.integer]) -> st.SearchStrategy[int]:
@@ -38,34 +58,19 @@ def ints(kind: type[np.integer]) -> st.SearchStrategy[int]:
     return st.one_of(st.integers(info.min, info.max), st.sampled_from(edges))
 
 
+def numbers(kind: type[np.generic]) -> st.SearchStrategy[int | float]:
+    """Values of `kind`; a float is a whole number, which a block sums exactly in any order."""
+    if issubclass(kind, np.integer):
+        return ints(kind)
+    return st.integers(-(2**16), 2**16).map(float)
+
+
 def lowest_unsigned(values: np.ndarray) -> np.int32:
     """The lowest of `values` read as unsigned, so -1 and any negative lose to any other.
 
     values: int32 of shape `[n]`.
     """
     return values.view(np.uint32).min().astype(np.int32)
-
-
-# Each reduction's host reference over a warp's 32 values, and the type it works in.
-_WARP_REDUCTIONS: dict[str, tuple[Callable[[np.ndarray], np.integer], type[np.integer]]] = {
-    "sum": (lambda values: values.sum(dtype=np.int32), np.int32),
-    "min": (np.min, np.int32),
-    "max": (np.max, np.int32),
-    "min_unsigned": (np.min, np.uint32),
-    "max_unsigned": (np.max, np.uint32),
-    "all_bits": (np.bitwise_and.reduce, np.uint32),
-    "any_bits": (np.bitwise_or.reduce, np.uint32),
-    "odd_bits": (np.bitwise_xor.reduce, np.uint32),
-    "min_nonnegative": (lowest_unsigned, np.int32),
-}
-
-# Each reduction's host reference over a block's values.
-_BLOCK_REDUCTIONS: dict[str, Callable[[np.ndarray], np.integer]] = {
-    "sum": _WARP_REDUCTIONS["sum"][0],
-    "min": np.min,
-    "max": np.max,
-    "min_nonnegative": lowest_unsigned,
-}
 
 
 def claimed_runs(taken: Sequence[int], flags: Sequence[bool]) -> list[list[int]]:
@@ -77,41 +82,46 @@ def claimed_runs(taken: Sequence[int], flags: Sequence[bool]) -> list[list[int]]
 
 
 class Probes(Struct):
-    """Ranges of sorted values to search for keys, and where the two bounds land."""
+    """Ranges of sorted values to search for keys, where the two bounds land and the key is."""
 
     low: Vector[i64]
     high: Vector[i64]
     keys: Vector[number]
     lower: Vector[i64]
     upper: Vector[i64]
+    found: Vector[i64]
 
 
 @cache
 def warp_reducing(name: str) -> Kernel:
-    """A kernel giving every thread the reduction `name` of the 32 values of its warp."""
+    """A kernel giving every thread the reduction `name` of the 32 values of its warp.
+
+    Row 0 of the table holds the values, and row 1 gets what each thread receives.
+    """
     reduction = getattr(warp, name)
 
     @kernel(threads=32)
-    def reduce(values: Vector[number], held: Vector[i64]) -> None:
-        for lane_item in items(values.size):
-            held[lane_item] = reduction(values[lane_item])
+    def reduce(table: Matrix[number]) -> None:
+        for lane_item in items(table.shape[1]):
+            table[1, lane_item] = reduction(table[0, lane_item])
 
     return reduce
 
 
 @cache
 def block_reducing(name: str, threads: int) -> Kernel:
-    """A kernel giving every thread the reduction `name` of its block, of two inputs in a row.
+    """A kernel giving every thread the reduction `name` of its block, of two rows in a row.
 
-    The second reduction reuses the scratch of the first, which the first leaves free.
+    Rows 2 and 3 of the table get what each thread receives of rows 0 and 1. The second reduction
+    reuses the scratch of the first, which the first leaves free.
     """
     reduction = getattr(block.over(threads), name)
 
     @kernel(per=Per.BLOCK, threads=threads)
-    def reduce(values: Vector[i32], held: Matrix[i64]) -> None:
+    def reduce(table: Matrix[number]) -> None:
         thread = thread_index()
-        held[thread, 0] = reduction(values[thread])
-        held[thread, 1] = reduction(values[thread] >> 1)
+        table[2, thread] = reduction(table[0, thread])
+        table[3, thread] = reduction(table[1, thread])
 
     return reduce
 
@@ -129,6 +139,229 @@ def block_scanning(threads: int) -> Kernel:
         held[thread, 1] = total
 
     return scan
+
+
+_IN_BLOCK = block.over(128)
+
+
+@kernel(threads=32)
+def warp_lowest(table: Matrix[i32]) -> None:
+    for lane_item in items(table.shape[1]):
+        table[1, lane_item] = warp.min(u32(table[0, lane_item]))
+
+
+@kernel(per=Per.BLOCK, threads=128)
+def block_lowest(table: Matrix[i32]) -> None:
+    table[1, thread_index()] = _IN_BLOCK.min(u32(table[0, thread_index()]))
+
+
+@kernel(threads=32)
+def broadcasting(values: Vector[number], sources: Vector[i32], held: Vector[number]) -> None:
+    for lane_item in items(values.size):
+        held[lane_item] = warp.broadcast(values[lane_item], sources[lane_item])
+
+
+@kernel(threads=32)
+def voting(flags: Vector[u8], held: Matrix[i64]) -> None:
+    for lane_item in items(flags.size):
+        found = warp.ballot(flags[lane_item] != 0)
+        prefix = warp.ballot_prefix(flags[lane_item] != 0)
+        held[lane_item, 0] = found
+        held[lane_item, 1] = warp.rank(found)
+        held[lane_item, 2] = warp.first(found)
+        held[lane_item, 3] = prefix.before
+        held[lane_item, 4] = prefix.total
+
+
+@kernel(threads=32)
+def reserving(
+    counter: Vector[i32], flags: Vector[u8], slots: Vector[i64], held: Vector[i32]
+) -> None:
+    thread = thread_index()
+    slot = warp.reserve(counter, flags[thread] != 0)
+    slots[thread] = slot
+    if slot >= 0:
+        held[slot] = thread
+
+
+@kernel
+def searching(values: Vector[number], probes: Probes) -> None:
+    for item in items(probes.keys.size):
+        low, high, key = probes.low[item], probes.high[item], probes.keys[item]
+        probes.lower[item] = search.lower_bound(values, search.Range(low, high), key)
+        probes.upper[item] = search.upper_bound(values, search.Range(low, high), key)
+        probes.found[item] = search.find(values, search.Range(low, high), key)
+
+
+@kernel(per=Per.WARP)
+def warp_copying[T: (u8, i32)](source: Vector[T], target: Vector[T], ranges: Matrix[u64]) -> None:
+    for item in items(ranges.shape[0]):
+        warp.copy(source, ranges[item, 0], target, ranges[item, 1], ranges[item, 2])
+
+
+@kernel
+def dividing[T: (i32, u32, i64, u64)](table: Matrix[T]) -> None:
+    """Row 2 gets row 0 divided by row 1, rounded up."""
+    for item in items(table.shape[1]):
+        table[2, item] = integers.ceildiv(table[0, item], table[1, item])
+
+
+@kernel
+def dividing_by_32(narrow: Vector[i32], wide: Vector[u64]) -> None:
+    for item in items(narrow.size):
+        narrow[item] = integers.ceildiv(narrow[item], 32)
+        wide[item] = integers.ceildiv(wide[item], 32)
+
+
+@pytest.mark.parametrize(("name", "kind"), _CASES)
+@settings(deadline=None, max_examples=15)
+@given(data=st.data())
+def test_a_warp_reduction_gives_every_lane_what_the_host_reduces_the_warp_to(
+    *, name: str, kind: type[np.generic], data: st.DataObject
+) -> None:
+    """Each of three warps reduces its own 32 values, at the type they are."""
+    values = np.array(data.draw(st.lists(numbers(kind), min_size=96, max_size=96)), dtype=kind)
+    table = cp.asarray(np.stack([values, np.zeros_like(values)]))
+    warp_reducing(name)[96](table)
+
+    reduced = [_REFERENCES[name](values[i : i + 32]) for i in range(0, 96, 32)]
+    assert table[1].get().tolist() == np.repeat(reduced, 32).tolist()
+
+
+@pytest.mark.parametrize(("name", "kind"), _CASES)
+@pytest.mark.parametrize("threads", [32, 128])
+@settings(deadline=None, max_examples=10)
+@given(data=st.data())
+def test_a_block_reduction_gives_every_thread_what_the_host_reduces_the_block_to(
+    *, name: str, kind: type[np.generic], threads: int, data: st.DataObject
+) -> None:
+    """Each block reduces its own values, twice in a row through one scratch.
+
+    A block holds one warp or four.
+    """
+    blocks = data.draw(st.integers(1, 3))
+    count = blocks * threads
+    drawn = data.draw(st.lists(numbers(kind), min_size=2 * count, max_size=2 * count))
+    values = np.array(drawn, dtype=kind).reshape(2, count)
+    table = cp.asarray(np.concatenate([values, np.zeros_like(values)]))
+    block_reducing(name, threads)[blocks](table)
+
+    groups = values.reshape(2, blocks, threads)
+    wanted = [
+        [_REFERENCES[name](group) for group in row for _ in range(threads)] for row in groups
+    ]
+    assert table[2:].get().tolist() == np.array(wanted, dtype=kind).tolist()
+
+
+@pytest.mark.parametrize(("launched", "width"), [(warp_lowest, 32), (block_lowest, 128)])
+@settings(deadline=None, max_examples=25)
+@given(data=st.data())
+def test_the_unsigned_minimum_is_the_lowest_non_negative_value_or_minus_one(
+    *, launched: Kernel, width: int, data: st.DataObject
+) -> None:
+    """Read unsigned, -1 and every negative value lose to any non-negative one.
+
+    A warp or a block of -1 alone gives -1.
+    """
+    mixed = st.lists(st.one_of(st.just(-1), ints(np.int32)), min_size=width, max_size=width)
+    groups = data.draw(st.lists(st.one_of(st.just([-1] * width), mixed), min_size=1, max_size=3))
+    values = np.array(groups, np.int32).ravel()
+    table = cp.asarray(np.stack([values, np.zeros_like(values)]))
+    launched[len(groups) if width > 32 else values.size](table)
+
+    wanted = np.repeat([lowest_unsigned(np.array(group, np.int32)) for group in groups], width)
+    assert table[1].get().tolist() == wanted.tolist()
+
+
+@pytest.mark.parametrize(("name", "kind"), _CASES)
+def test_a_32_bit_integer_reduction_is_one_redux(*, name: str, kind: type[np.generic]) -> None:
+    """An `i32` or `u32` reduces in one REDUX on every target; the other types reduce in none."""
+    launched = warp_reducing(name)
+    launched[32](cp.zeros((2, 32), kind))
+    compiled = next(
+        found for found in launched.dispatcher.overloads if as_dtype(found[0].dtype) == kind
+    )
+    sass = launched.dispatcher.inspect_sass(compiled)
+
+    found = re.findall(r"/\*[0-9a-f]{4}\*/\s+(?:@!?U?P\w+\s+)?(REDUX[\w.]*)", sass)
+    assert len(found) == (1 if kind in {np.int32, np.uint32} else 0)
+
+
+def test_a_reduction_refuses_a_type_it_does_not_take() -> None:
+    """A byte reduces at no type of its own, and a signed word has no bitwise reduction."""
+
+    @kernel(threads=32)
+    def bytes_summed(table: Matrix[u8]) -> None:
+        table[1, thread_index()] = warp.sum(table[0, thread_index()])
+
+    @kernel(threads=32)
+    def signed_bits(table: Matrix[i32]) -> None:
+        table[1, thread_index()] = warp.or_(table[0, thread_index()])
+
+    taken = r"sum takes \(i32\); \(u32\); \(i64\); \(u64\); \(f32\); \(f64\), not \(u8\)"
+    with pytest.raises(TypingError, match=taken):
+        bytes_summed[32](cp.zeros((2, 32), np.uint8))
+    with pytest.raises(TypingError, match=r"or_ takes \(u32\); \(u64\), not \(i32\)"):
+        signed_bits[32](cp.zeros((2, 32), np.int32))
+
+
+@pytest.mark.parametrize("kind", _NUMBERS)
+@settings(deadline=None, max_examples=15)
+@given(data=st.data())
+def test_a_broadcast_gives_each_lane_the_value_of_the_lane_it_names(
+    *, kind: type[np.generic], data: st.DataObject
+) -> None:
+    """Each lane names its own source lane, and gets that lane's value unchanged."""
+    values = np.array(data.draw(st.lists(numbers(kind), min_size=64, max_size=64)), dtype=kind)
+    sources = np.array(data.draw(st.lists(st.integers(0, 31), min_size=64, max_size=64)))
+    held = cp.zeros(64, kind)
+    broadcasting[64](cp.asarray(values), cp.asarray(sources, np.int32), held)
+
+    wanted = [values[(index // 32) * 32 + source] for index, source in enumerate(sources)]
+    assert held.get().tolist() == np.array(wanted, dtype=kind).tolist()
+
+
+@settings(deadline=None, max_examples=40)
+@given(flags=st.lists(st.booleans(), min_size=64, max_size=64))
+def test_a_ballot_is_the_mask_of_flagged_lanes_ranked_and_led_by_the_lowest(
+    *, flags: Sequence[bool]
+) -> None:
+    """Every lane gets its warp's mask, how many flagged lanes lie below it, and the lowest.
+
+    The prefix of a ballot is that count beside the warp's.
+    """
+    held = cp.zeros((64, 5), np.int64)
+    voting[64](cp.asarray(np.array(flags, np.uint8)), held)
+
+    wanted = []
+    for index in range(64):
+        start, lane = index - index % 32, index % 32
+        mask = sum(flagged << bit for bit, flagged in enumerate(flags[start : start + 32]))
+        lowest, below = (mask & -mask).bit_length() - 1, (mask & ((1 << lane) - 1)).bit_count()
+        wanted.append([mask, below, lowest, below, mask.bit_count()])
+    assert held.get().tolist() == wanted
+
+
+@settings(deadline=None, max_examples=40)
+@given(flags=st.lists(st.booleans(), min_size=96, max_size=96), base=st.integers(0, 50))
+def test_a_warp_reserves_a_run_of_slots_with_one_add_for_its_flagged_lanes(
+    *, flags: Sequence[bool], base: int
+) -> None:
+    """The flagged lanes of a warp take consecutive slots in lane order after the counter.
+
+    The warps' runs come in any order and the counter ends past them all.
+    """
+    counter = cp.array([base], np.int32)
+    slots, written = cp.full(96, -2, np.int64), cp.full(base + 97, -2, np.int32)
+    reserving[96](counter, cp.asarray(np.array(flags, np.uint8)), slots, written)
+
+    taken, written_at = slots.get().tolist(), written.get().tolist()
+    claimed = claimed_runs(taken, flags)
+    assert all(not run or run == list(range(run[0], run[0] + len(run))) for run in claimed)
+    assert sorted(slot for run in claimed for slot in run) == list(range(base, base + sum(flags)))
+    assert taken.count(-1) == flags.count(False)
+    assert all(written_at[slot] == thread for thread, slot in enumerate(taken) if flags[thread])
+    assert counter.get().tolist() == [base + sum(flags)]
 
 
 @pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
@@ -162,114 +395,6 @@ def test_a_block_has_whole_warps_and_its_operations_are_made_once_per_size() -> 
             block.over(threads)
 
 
-@kernel
-def first_lanes(masks: Vector[u32], held: Vector[i64]) -> None:
-    for item in items(masks.size):
-        held[item] = warp.first(masks[item])
-
-
-@kernel(threads=32)
-def reserving(
-    counter: Vector[i32], flags: Vector[u8], slots: Vector[i64], held: Vector[i32]
-) -> None:
-    thread = thread_index()
-    slot = warp.reserve(counter, flags[thread] != 0)
-    slots[thread] = slot
-    if slot >= 0:
-        held[slot] = thread
-
-
-@kernel
-def lowering(best: Vector[u32], values: Vector[i32], held: Vector[i64]) -> None:
-    for item in items(held.size):
-        held[item] = scalar.min_nonnegative(best[item], values[item])
-
-
-@kernel
-def searching(values: Vector[number], probes: Probes) -> None:
-    for item in items(probes.keys.size):
-        low, high, key = probes.low[item], probes.high[item], probes.keys[item]
-        probes.lower[item] = search.lower_bound(values, search.Range(low, high), key)
-        probes.upper[item] = search.upper_bound(values, search.Range(low, high), key)
-
-
-@pytest.mark.parametrize("name", _WARP_REDUCTIONS)
-@settings(deadline=None, max_examples=25)
-@given(data=st.data())
-def test_a_warp_reduction_gives_every_lane_what_the_host_reduces_the_warp_to(
-    *, name: str, data: st.DataObject
-) -> None:
-    """Each of three warps reduces its own 32 values."""
-    reference, kind = _WARP_REDUCTIONS[name]
-    values = np.array(data.draw(st.lists(ints(kind), min_size=96, max_size=96)), dtype=kind)
-    held = cp.zeros(96, np.int64)
-    warp_reducing(name)[96](cp.asarray(values), held)
-
-    wanted = np.repeat([reference(values[i : i + 32]) for i in range(0, 96, 32)], 32)
-    assert held.get().tolist() == wanted.tolist()
-
-
-@settings(deadline=None, max_examples=40)
-@given(masks=st.lists(ints(np.uint32), min_size=1, max_size=40))
-def test_the_first_lane_of_a_mask_is_its_lowest_set_bit_or_minus_one(
-    *, masks: Sequence[int]
-) -> None:
-    """A lane is a set bit of the ballot mask, numbered from zero."""
-    held = cp.zeros(len(masks), np.int64)
-    first_lanes[len(masks)](cp.asarray(np.array(masks, np.uint32)), held)
-
-    assert held.get().tolist() == [(mask & -mask).bit_length() - 1 for mask in masks]
-
-
-@settings(deadline=None, max_examples=40)
-@given(flags=st.lists(st.booleans(), min_size=96, max_size=96), base=st.integers(0, 50))
-def test_a_warp_reserves_a_run_of_slots_with_one_add_for_its_flagged_lanes(
-    *, flags: Sequence[bool], base: int
-) -> None:
-    """The flagged lanes of a warp take consecutive slots in lane order after the counter.
-
-    The warps' runs come in any order and the counter ends past them all.
-    """
-    counter = cp.array([base], np.int32)
-    slots, written = cp.full(96, -2, np.int64), cp.full(base + 97, -2, np.int32)
-    reserving[96](counter, cp.asarray(np.array(flags, np.uint8)), slots, written)
-
-    taken, written_at = slots.get().tolist(), written.get().tolist()
-    claimed = claimed_runs(taken, flags)
-    assert all(not run or run == list(range(run[0], run[0] + len(run))) for run in claimed)
-    assert sorted(slot for run in claimed for slot in run) == list(range(base, base + sum(flags)))
-    assert taken.count(-1) == flags.count(False)
-    assert all(written_at[slot] == thread for thread, slot in enumerate(taken) if flags[thread])
-    assert counter.get().tolist() == [base + sum(flags)]
-
-
-@pytest.mark.parametrize("name", _BLOCK_REDUCTIONS)
-@pytest.mark.parametrize("threads", [32, 128])
-@settings(deadline=None, max_examples=15)
-@given(data=st.data())
-def test_a_block_reduction_gives_every_thread_what_the_host_reduces_the_block_to(
-    *, name: str, threads: int, data: st.DataObject
-) -> None:
-    """Each block reduces its own values, twice in a row through one scratch.
-
-    A block holds one warp or four.
-    """
-    blocks = data.draw(st.integers(1, 3))
-    drawn = data.draw(
-        st.lists(ints(np.int32), min_size=blocks * threads, max_size=blocks * threads)
-    )
-    values = np.array(drawn, dtype=np.int32)
-    held = cp.zeros((blocks * threads, 2), np.int64)
-    block_reducing(name, threads)[blocks](cp.asarray(values), held)
-
-    reference = _BLOCK_REDUCTIONS[name]
-    wanted = [
-        [reference(shifted[start : start + threads]) for shifted in (values, values >> 1)]
-        for start in range(0, blocks * threads, threads)
-    ]
-    assert held.get().tolist() == np.repeat(wanted, threads, axis=0).tolist()
-
-
 @pytest.mark.parametrize("threads", [32, 128])
 @settings(deadline=None, max_examples=15)
 @given(data=st.data())
@@ -289,20 +414,6 @@ def test_a_block_scan_gives_every_thread_the_sum_of_those_before_it_and_the_bloc
     before = np.cumsum(segments, axis=1, dtype=np.int32) - segments
     total = np.repeat(segments.sum(axis=1, dtype=np.int32), threads)
     assert held.get().tolist() == np.stack([before.ravel(), total], axis=1).tolist()
-
-
-@settings(deadline=None, max_examples=40)
-@given(pairs=st.lists(st.tuples(ints(np.int32), ints(np.int32)), min_size=1, max_size=40))
-def test_the_lower_of_two_values_reads_minus_one_as_the_largest(
-    *, pairs: Sequence[tuple[int, int]]
-) -> None:
-    """Both values read as unsigned, so -1 and every negative lose to any non-negative one."""
-    held = cp.zeros(len(pairs), np.int64)
-    best, values = (np.array(column, np.int32) for column in zip(*pairs, strict=True))
-    lowering[len(pairs)](cp.asarray(best.view(np.uint32)), cp.asarray(values), held)
-
-    wanted = [lowest_unsigned(np.array(pair, np.int32)) for pair in pairs]
-    assert held.get().tolist() == wanted
 
 
 @pytest.mark.parametrize(
@@ -328,12 +439,68 @@ def test_a_bound_is_where_the_host_bisects_a_range_of_the_sorted_values(
         np.array([key for _, _, key in ranges], keys_kind),
         cp.zeros(len(ranges), np.int64),
         cp.zeros(len(ranges), np.int64),
+        cp.zeros(len(ranges), np.int64),
     )
     searching[len(ranges)](cp.asarray(np.array(values, values_kind)), probes)
 
-    assert probes.lower.get().tolist() == [
-        bisect.bisect_left(values, k, a, b) for a, b, k in ranges
-    ]
+    lower = [bisect.bisect_left(values, k, a, b) for a, b, k in ranges]
+    assert probes.lower.get().tolist() == lower
     assert probes.upper.get().tolist() == [
         bisect.bisect_right(values, k, a, b) for a, b, k in ranges
+    ]
+    assert probes.found.get().tolist() == [
+        at if at < b and values[at] == k else -1
+        for at, (_, b, k) in zip(lower, ranges, strict=True)
+    ]
+
+
+@pytest.mark.parametrize("kind", [np.uint8, np.int32])
+@settings(deadline=None, max_examples=15)
+@given(data=st.data())
+def test_a_warp_copies_each_range_with_its_lanes_and_leaves_the_rest(
+    *, kind: type[np.integer], data: st.DataObject
+) -> None:
+    """Ranges up to 600 elements take the four-deep loop and the tail; a copy stays in its slot."""
+    ranges_drawn = st.tuples(st.integers(0, 4096), st.integers(0, 600))
+    drawn = data.draw(st.lists(ranges_drawn, min_size=1, max_size=4))
+    ranges = np.array([[start, 640 * slot, length] for slot, (start, length) in enumerate(drawn)])
+    source, target = np.arange(4096 + 600).astype(kind), np.full(640 * len(drawn), 7, kind)
+    held = cp.asarray(target)
+    warp_copying[len(drawn)](cp.asarray(source), held, cp.asarray(ranges, np.uint64))
+
+    for start, to, length in ranges:
+        target[to : to + length] = source[start : start + length]
+    assert held.get().tolist() == target.tolist()
+
+
+@pytest.mark.parametrize("kind", [np.int32, np.uint32, np.int64, np.uint64])
+@settings(deadline=None, max_examples=25)
+@given(data=st.data())
+def test_ceildiv_rounds_the_quotient_up_without_overflowing_near_the_top(
+    *, kind: type[np.integer], data: st.DataObject
+) -> None:
+    """Any value of `T`, its edges included, over any positive divisor of `T`."""
+    values = data.draw(st.lists(ints(kind), min_size=64, max_size=64))
+    divisors = data.draw(st.lists(st.integers(1, np.iinfo(kind).max), min_size=64, max_size=64))
+    table = cp.asarray(np.array([values, divisors, values], kind))
+    dividing[64](table)
+
+    wanted = [-(-value // divisor) for value, divisor in zip(values, divisors, strict=True)]
+    assert table[2].get().tolist() == wanted
+
+
+@settings(deadline=None, max_examples=25)
+@given(
+    narrow=st.lists(ints(np.int32), min_size=64, max_size=64),
+    wide=st.lists(ints(np.uint64), min_size=64, max_size=64),
+)
+def test_ceildiv_by_a_literal_divides_at_the_type_of_the_value(
+    *, narrow: Sequence[int], wide: Sequence[int]
+) -> None:
+    """An int literal takes the type of the value it meets, so no wider signature ties."""
+    held = cp.asarray(np.array(narrow, np.int32)), cp.asarray(np.array(wide, np.uint64))
+    dividing_by_32[64](*held)
+
+    assert [part.get().tolist() for part in held] == [
+        [-(-value // 32) for value in values] for values in (narrow, wide)
     ]

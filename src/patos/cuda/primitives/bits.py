@@ -15,13 +15,13 @@ The video instructions PTX emulates stay unused (`vabsdiff4.s32` 31 SASS instruc
 
 from typing import overload
 
-from ..typed import device, dispatched, i8x4, i16, i16x2, i32, ptx, u8x4, u16x2, u32
+from ..typed import device, dispatched, i8x4, i16, i16x2, i32, ptx, u8, u8x4, u16, u16x2, u32, u64
 
 # Packed lanes of any kind, as a dispatched operation's operands or result.
 type Lane = u8x4 | i8x4 | u16x2 | i16x2
 
 
-@ptx("prmt.b32 $result, $low, $high, $selector;", pure=True)
+@ptx("prmt.b32 $result, $low, $high, $selector;")
 def permute(low: u32, high: u32, selector: u32) -> u32:
     """The four bytes `selector` picks out of the eight of `high:low`.
 
@@ -32,35 +32,68 @@ def permute(low: u32, high: u32, selector: u32) -> u32:
     raise NotImplementedError
 
 
-@ptx("shf.r.wrap.b32 $result, $low, $high, $shift;", pure=True)
+@ptx("shf.r.wrap.b32 $result, $low, $high, $shift;")
 def funnel(low: u32, high: u32, shift: u32) -> u32:
     """The low 32 bits of `high:low` shifted right by `shift` modulo 32."""
     raise NotImplementedError
 
 
+@device
+def _join_u8(low: u8, high: u8) -> u16:
+    return low | (u16(high) << 8)
+
+
+@device
+def _join_u32(low: u32, high: u32) -> u64:
+    return (u64(high) << 32) | low
+
+
+@overload
+def join(low: u8, high: u8) -> u16: ...
+@overload
+def join(low: u32, high: u32) -> u64: ...
+@dispatched(_join_u8, _join_u32)
+def join(low: u8 | u32, high: u8 | u32) -> u16 | u64:
+    """`high` above `low`, two halves of one unsigned width as a word of twice it."""
+    raise NotImplementedError
+
+
+@device
+def _bit[W: (u32, u64)](word: W, index: u32) -> u32:
+    return (word >> index) & 1
+
+
+@dispatched(_bit)
+def bit[W: (u32, u64)](word: W, index: u32) -> u32:
+    """Bit `index` of `word`, 0 or 1, `index` below the width of `word`."""
+    raise NotImplementedError
+
+
 # A video instruction takes the operand it adds from a register, never an immediate.
-@ptx(
-    "{\n.reg .u32 zero;\nmov.u32 zero, 0;\nvabsdiff4.u32.u32.u32 $result, $a, $b, zero;\n}",
-    pure=True,
-)
+@ptx("{\n.reg .u32 zero;\nmov.u32 zero, 0;\nvabsdiff4.u32.u32.u32 $result, $a, $b, zero;\n}")
 def _absdiff_u8x4(a: u8x4, b: u8x4) -> u8x4:
     raise NotImplementedError
 
 
-@ptx("sad.u32 $result, $a, $b, 0;", pure=True)
+@ptx("sad.u32 $result, $a, $b, 0;")
 def _absdiff_u32(a: u32, b: u32) -> u32:
     raise NotImplementedError
 
 
-@ptx("sad.s32 $result, $a, $b, 0;", pure=True)
+@ptx("sad.s32 $result, $a, $b, 0;")
 def _absdiff_i32(a: i32, b: i32) -> u32:
     raise NotImplementedError
 
 
 @device
+def _biased(lanes: i8x4) -> u8x4:
+    """Signed bytes as unsigned ones in the same order and as far apart: each sign bit flipped."""
+    return u32(lanes) ^ 0x80808080
+
+
+@device
 def _absdiff_i8x4(a: i8x4, b: i8x4) -> u8x4:
-    """Bytes biased by 0x80 differ as the signed bytes do."""
-    return _absdiff_u8x4(u32(a) ^ 0x80808080, u32(b) ^ 0x80808080)
+    return _absdiff_u8x4(_biased(a), _biased(b))
 
 
 @device
@@ -95,24 +128,24 @@ def absdiff(a: Lane | u32 | i32, b: Lane | u32 | i32) -> Lane | u32:
     raise NotImplementedError
 
 
-@ptx("vabsdiff4.u32.u32.u32.add $result, $a, $b, $c;", pure=True)
+@ptx("vabsdiff4.u32.u32.u32.add $result, $a, $b, $c;")
 def _sad_u8x4(a: u8x4, b: u8x4, c: u32) -> u32:
     raise NotImplementedError
 
 
-@ptx("sad.u32 $result, $a, $b, $c;", pure=True)
+@ptx("sad.u32 $result, $a, $b, $c;")
 def _sad_u32(a: u32, b: u32, c: u32) -> u32:
     raise NotImplementedError
 
 
-@ptx("sad.s32 $result, $a, $b, $c;", pure=True)
+@ptx("sad.s32 $result, $a, $b, $c;")
 def _sad_i32(a: i32, b: i32, c: u32) -> u32:
     raise NotImplementedError
 
 
 @device
 def _sad_i8x4(a: i8x4, b: i8x4, c: u32) -> u32:
-    return _sad_u8x4(u32(a) ^ 0x80808080, u32(b) ^ 0x80808080, c)
+    return _sad_u8x4(_biased(a), _biased(b), c)
 
 
 @overload
@@ -129,22 +162,22 @@ def sad(a: Lane | u32 | i32, b: Lane | u32 | i32, c: u32) -> u32:
     raise NotImplementedError
 
 
-@ptx("dp4a.u32.u32 $result, $a, $b, $c;", pure=True)
+@ptx("dp4a.u32.u32 $result, $a, $b, $c;")
 def _dot_u8x4(a: u8x4, b: u8x4, c: u32) -> u32:
     raise NotImplementedError
 
 
-@ptx("dp4a.s32.s32 $result, $a, $b, $c;", pure=True)
+@ptx("dp4a.s32.s32 $result, $a, $b, $c;")
 def _dot_i8x4(a: i8x4, b: i8x4, c: i32) -> i32:
     raise NotImplementedError
 
 
-@ptx("dp2a.lo.u32.u32 $result, $a, $b, $c;", pure=True)
+@ptx("dp2a.lo.u32.u32 $result, $a, $b, $c;")
 def _dot_u16x2(a: u16x2, b: u8x4, c: u32) -> u32:
     raise NotImplementedError
 
 
-@ptx("dp2a.lo.s32.s32 $result, $a, $b, $c;", pure=True)
+@ptx("dp2a.lo.s32.s32 $result, $a, $b, $c;")
 def _dot_i16x2(a: i16x2, b: i8x4, c: i32) -> i32:
     raise NotImplementedError
 

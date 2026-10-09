@@ -54,6 +54,7 @@ from patos.cuda.typed import (
     ptx,
     thread_in_block,
     thread_index,
+    threads_per_block,
     u8,
     u8x4,
     u16,
@@ -109,7 +110,9 @@ _EDGES = [
     for edge in (-(2**bit), 2**bit - 1, 2**bit)
     if -(2**63) <= edge < 2**64
 ]
-literals = st.one_of(st.integers(-(2**63), 2**64 - 1), st.sampled_from(_EDGES)).map(IntLiteral)
+literals = st.builds(
+    IntLiteral, value=st.one_of(st.integers(-(2**63), 2**64 - 1), st.sampled_from(_EDGES))
+)
 operands = st.one_of(scalars, literals)
 # A literal past int64 types as uint64 whatever it meets, which the shift reading leaves out.
 int64_operands = st.one_of(scalars, literals.filter(lambda literal: literal.value < 2**63))
@@ -236,7 +239,8 @@ _NAMESPACE: dict[str, Callable | type | TypeAliasType | ModuleType] = {
     "cuda": cuda, "device": device, "kernel": kernel, "ptx": ptx, "np": np, "items": items,
     "items_through": items_through, "lane": lane, "thread_index": thread_index,
     "warp_index": warp_index, "block_index": block_index, "thread_in_block": thread_in_block,
-    "warp_in_block": warp_in_block, "NamedTuple": NamedTuple, "Span": Span, "Viewed": Viewed,
+    "warp_in_block": warp_in_block, "threads_per_block": threads_per_block,
+    "NamedTuple": NamedTuple, "Span": Span, "Viewed": Viewed,
     "Unfit": Unfit, "Cell": Cell, "Stepped": Stepped, "u8x4": u8x4, "i16x2": i16x2, "bits": bits,
 }  # fmt: skip
 
@@ -721,7 +725,7 @@ def test_a_numeric_type_is_a_scalar_and_in_a_vector_or_a_matrix_an_array(
     element = next(kind for kind, short in _ELEMENTS.items() if short == name)
 
     assert annotation(f"{array}[{name}]") == ArrayOf(
-        element, ("Vector", "Matrix").index(array) + 1
+        element=element, ndim=("Vector", "Matrix").index(array) + 1
     )
     with pytest.raises(TypeError, match=re.escape(f"{name}[...] declares no array; write ")):
         annotation(f"{name}[{shape}]")
@@ -868,7 +872,9 @@ def test_a_rebuilt_function_keeps_its_name_docstring_globals_and_signature() -> 
 
     assert (rebuilt.__doc__, rebuilt.__qualname__) == ("Widen before the product.", "f")
     assert rebuilt.__globals__ is original.__globals__
-    assert recorded(rebuilt) == Signature((np.uint32, np.uint32, ArrayOf(np.uint64, 1)), np.uint64)
+    assert recorded(rebuilt) == Signature(
+        parameters=(np.uint32, np.uint32, ArrayOf(element=np.uint64, ndim=1)), returns=np.uint64
+    )
 
 
 def test_a_type_parameter_is_left_alone_and_a_type_alias_declares_its_type() -> None:
@@ -1050,7 +1056,7 @@ def test_a_literal_takes_the_type_of_the_u32_it_meets(context: CUDATypingContext
     """Numba asks the rule about the literal before its plain `int64`, so `u32 + 1` stays u32."""
     signature = resolved(context, operator.add, types.uint32, types.IntegerLiteral(1))
 
-    assert meet(np.uint32, IntLiteral(1)) is np.uint32
+    assert meet(np.uint32, IntLiteral(value=1)) is np.uint32
     assert signature.return_type == types.uint32
 
 
@@ -1672,6 +1678,7 @@ _IDENTITIES: dict[str, tuple[str, str, Callable[[int], int], type[np.integer]]] 
     "warp_in_block": (
         "warp_in_block()", "cuda.threadIdx.x // 32", lambda t: t % 128 // 32, np.int32
     ),
+    "threads_per_block": ("threads_per_block()", "cuda.blockDim.x", lambda _: 128, np.int32),
 }  # fmt: skip
 
 _TILING = executed(
@@ -1882,12 +1889,12 @@ def test_a_named_tuple_declares_its_fields_and_one_with_an_undeclared_field_decl
     """A named value is declared by its class, field by field, and spelled by the class's name."""
     span = declared(annotation("Span"))
 
-    assert span == NamedValue(Span, (("start", np.int32), ("end", np.int32)))
+    assert span == NamedValue(cls=Span, fields=(("start", np.int32), ("end", np.int32)))
     assert isinstance(span, NamedValue) and span.kinds() == (np.int32, np.int32)
     assert named(span) == "Span"
     assert declared(annotation("Unfit")) is None
     assert isinstance(viewed := declared(annotation("Viewed")), NamedValue)
-    assert viewed.field("data") == ArrayOf(np.uint8, 1)
+    assert viewed.field("data") == ArrayOf(element=np.uint8, ndim=1)
 
 
 def test_a_record_holds_no_named_value() -> None:
@@ -1910,7 +1917,23 @@ def test_an_identity_helper_returns_the_type_numba_gives_the_expression_it_names
     name: str,
 ) -> None:
     """The index of a thread in the grid is 64 bits wide, every other identity 32."""
-    assert recorded(globals()[name].py_func) == Signature((), _IDENTITIES[name][3])
+    assert recorded(globals()[name].py_func) == Signature(
+        parameters=(), returns=_IDENTITIES[name][3]
+    )
+
+
+def test_a_function_made_in_a_function_reads_the_names_only_its_annotations_name() -> None:
+    """Such a name is a cell of the function's `__annotate__` (PEP 649), never a global."""
+
+    def made(element: type) -> FunctionType:
+        def first(values: Vector[element]) -> element:
+            return values[0]
+
+        return dispatched(first).py_func
+
+    assert recorded(made(u16)) == Signature(
+        parameters=(ArrayOf(element=np.uint16, ndim=1),), returns=np.uint16
+    )
 
 
 @pytest.mark.parametrize("name", _IDENTITIES)

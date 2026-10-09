@@ -11,7 +11,7 @@ import cupy as cp
 import numpy as np
 import pytest
 
-from patos.cuda.primitives import bits, memory
+from patos.cuda.primitives import bits, memory, warp
 from patos.cuda.typed import (
     AnnotationError,
     Kernel,
@@ -23,6 +23,7 @@ from patos.cuda.typed import (
     i8x4,
     i16x2,
     i32,
+    intrinsics,
     items,
     kernel,
     ptx,
@@ -57,9 +58,24 @@ _SASS: dict[tuple[str, tuple[Operand, Operand]], tuple[int, int]] = {
     ("min", (u8x4, u8x4)): (6, 7), ("max", (u8x4, u8x4)): (6, 7),
 }  # fmt: skip
 _SUMMING = {"sad", "dot"}
+# Every opcode patos's templates use, and the effects no template may move, by whether a template
+# of it alone is pure.
+_OPCODES = {
+    "add.s32": True, "add.u32": True, "dp2a.lo.s32.s32": True, "dp2a.lo.u32.u32": True,
+    "dp4a.s32.s32": True, "dp4a.u32.u32": True, "mov.s32": True, "mov.u32": True,
+    "mov.u64": True, "prmt.b32": True, "sad.s32": True, "sad.u32": True, "shf.r.wrap.b32": True,
+    "vabsdiff4.u32.u32.u32": True, "vabsdiff4.u32.u32.u32.add": True,
+    "ld.global.nc.u32": False, "ld.global.nc.u64": False, "ld.global.nc.v2.u64": False,
+    "ld.global.nc.v4.u32": False, "redux.sync.add.s32": False, "redux.sync.add.u32": False,
+    "redux.sync.and.b32": False, "redux.sync.max.s32": False, "redux.sync.max.u32": False,
+    "redux.sync.min.s32": False, "redux.sync.min.u32": False, "redux.sync.or.b32": False,
+    "redux.sync.xor.b32": False, "shfl.sync.up.b32": False, "st.global.u32": False,
+    "atom.global.add.u32": False, "bar.sync": False, "membar.gl": False, "nanosleep.u32": False,
+    "vote.sync.ballot.b32": False,
+}  # fmt: skip
 
 
-@ptx("add.u32 $result0, $value, $value;\nmov.u64 $result1, $wide;", pure=True)
+@ptx("add.u32 $result0, $value, $value;\nmov.u64 $result1, $wide;")
 def doubled_and_wide(value: u32, wide: u64) -> tuple[u32, u64]:
     """`value` doubled, and `wide` as it is: a tuple of two types."""
     raise NotImplementedError
@@ -139,6 +155,40 @@ def loading(wide: Vector[u64], narrow: Vector[u32], held: Matrix[u64]) -> None:
             fourth,
         )
         held[group, 6], held[group, 7], held[group, 8] = low, high, memory.address(narrow, group)
+
+
+@kernel
+def joining(halves: Matrix[u8], words: Matrix[u32], held: Matrix[u64]) -> None:
+    for item in items(held.shape[0]):
+        held[item, 0] = bits.join(halves[item, 0], halves[item, 1])
+        held[item, 1] = bits.join(words[item, 0], words[item, 1])
+
+
+@kernel
+def bit_reading(
+    narrow: Vector[u32], wide: Vector[u64], indices: Vector[u32], held: Matrix[u32]
+) -> None:
+    for item in items(narrow.size):
+        held[item, 0] = bits.bit(narrow[item], indices[item] & 31)
+        held[item, 1] = bits.bit(wide[item], indices[item])
+
+
+@kernel
+def comparing(left: Vector[u8], right: Vector[u8], ranges: Matrix[u64], held: Vector[u8]) -> None:
+    for item in items(held.size):
+        held[item] = memory.equal(left, ranges[item, 0], right, ranges[item, 1], ranges[item, 2])
+
+
+@kernel
+def copying[T: (u8, i32)](source: Vector[T], target: Vector[T], ranges: Matrix[u64]) -> None:
+    for item in items(ranges.shape[0]):
+        memory.copy(source, ranges[item, 0], target, ranges[item, 1], ranges[item, 2])
+
+
+@kernel
+def packing(chars: Vector[u8], ranges: Matrix[u64], held: Matrix[u64]) -> None:
+    for item in items(held.shape[0]):
+        held[item, 0], held[item, 1] = memory.pack(chars, ranges[item, 0], ranges[item, 1])
 
 
 @kernel
@@ -270,17 +320,51 @@ def test_a_lane_operation_compiles_to_the_instructions_measured_for_its_lanes(
     assert found.total() - base.total() + 1 == _SASS[name, lanes][capability == (12, 1)]
 
 
+@pytest.mark.parametrize(("opcode", "pure"), _OPCODES.items())
+def test_a_template_is_pure_when_every_instruction_is_register_arithmetic(
+    *, opcode: str, pure: bool
+) -> None:
+    """An opcode is pure alone and after a pure instruction, or an effect in both.
+
+    The table holds every opcode patos's templates use and the effects a template must never move;
+    a special register or an opcode patos does not know is an effect too.
+    """
+    after = f"{{\n.reg .u32 t;\nmov.u32 t, $a;\n@p {opcode} $result, t;\n}}"
+    assert intrinsics.is_pure(f"{opcode} $result, $a;") is pure
+    assert intrinsics.is_pure(after) is pure
+    assert not intrinsics.is_pure("mov.u32 $result, %laneid;")
+    assert not intrinsics.is_pure("frobnicate.b32 $result, $a;")
+
+
+def test_every_template_of_patos_uses_opcodes_the_purity_table_classifies() -> None:
+    """A new opcode in a primitive is classified here before it ships."""
+    templates = [
+        found.template
+        for module in (bits, memory, warp)
+        for found in vars(module).values()
+        if isinstance(getattr(found, "template", None), str)
+    ]
+    used = {
+        match[1]
+        for template in templates
+        for match in re.finditer(r"(?:^|[;{\n])\s*(?:@!?\w+\s+)?([a-z][\w.]*)\s", template)
+    }
+
+    assert len(templates) == 26
+    assert used <= set(_OPCODES)
+
+
 def test_a_dispatched_name_takes_only_implementations_of_its_own_operands() -> None:
     """An implementation of another arity is refused at definition, not at a call."""
 
-    @ptx("add.u32 $result, $a, $b;", pure=True)
+    @ptx("add.u32 $result, $a, $b;")
     def added(a: u32, b: u32) -> u32:
         raise NotImplementedError
 
     def alone(a: u32) -> u32:
         raise NotImplementedError
 
-    with pytest.raises(TypeError, match=r"alone: an implementation takes other operands"):
+    with pytest.raises(TypeError, match=r"alone: no implementations take \(u32\)"):
         dispatched(added)(alone)
 
 
@@ -337,3 +421,76 @@ def test_a_window_is_the_sixteen_bytes_at_any_offset_and_zero_past_the_end(
     padded = np.concatenate([chars.get(), np.zeros(16, np.uint8)])
     around = np.arange(size)[:, None] + np.arange(16)[None, :]
     assert held.get().tolist() == padded[around].view(np.uint64).tolist()
+
+
+def test_join_puts_the_high_half_above_the_low_one_at_each_width() -> None:
+    """Two bytes make a `u16` and two words a `u64`, `low` in the low bits."""
+    rng = np.random.default_rng(11)
+    edges = [[0, 0], [255, 255], [1, 0], [0, 1]]
+    halves = np.vstack([edges, rng.integers(0, 256, (252, 2))]).astype(np.uint64)
+    edges = [[0, 2**32 - 1], [2**32 - 1, 0]]
+    words = np.vstack([edges, rng.integers(0, 2**32, (254, 2))]).astype(np.uint64)
+    held = cp.zeros((256, 2), np.uint64)
+    joining[256](cp.asarray(halves, np.uint8), cp.asarray(words, np.uint32), held)
+
+    wanted = np.column_stack([halves[:, 0] | halves[:, 1] << 8, words[:, 0] | words[:, 1] << 32])
+    assert held.get().tolist() == wanted.tolist()
+
+
+def test_bit_is_the_indexed_bit_of_a_word_of_either_width() -> None:
+    rng = np.random.default_rng(12)
+    narrow = rng.integers(0, 2**32, 512, dtype=np.uint32)
+    wide = rng.integers(0, 2**64, 512, dtype=np.uint64)
+    indices = rng.integers(0, 64, 512, dtype=np.uint32)
+    held = cp.zeros((512, 2), np.uint32)
+    bit_reading[512](cp.asarray(narrow), cp.asarray(wide), cp.asarray(indices), held)
+
+    wanted = [
+        [int(n) >> (int(i) & 31) & 1, int(w) >> int(i) & 1]
+        for n, w, i in zip(narrow, wide, indices, strict=True)
+    ]
+    assert held.get().tolist() == wanted
+
+
+def test_equal_compares_two_byte_ranges_up_to_their_first_difference() -> None:
+    """Ranges of every length up to 40, equal or differing at one byte, and empty ones."""
+    rng = np.random.default_rng(13)
+    left = rng.integers(0, 4, 4096, dtype=np.uint8)
+    right = left ^ (rng.random(4096) < 0.02)
+    starts = rng.integers(0, 4096 - 40, 512)
+    others = np.where(np.arange(512) < 256, starts, rng.integers(0, 4096 - 40, 512))
+    ranges = np.column_stack([starts, others, rng.integers(0, 41, 512)]).astype(np.uint64)
+    held = cp.zeros(512, np.uint8)
+    comparing[512](cp.asarray(left), cp.asarray(right), cp.asarray(ranges), held)
+
+    wanted = [bytes(left[a : a + n]) == bytes(right[b : b + n]) for a, b, n in ranges.astype(int)]
+    assert held.get().astype(bool).tolist() == wanted
+
+
+@pytest.mark.parametrize("kind", [np.uint8, np.int32])
+def test_copy_moves_each_range_in_one_thread_and_leaves_the_rest(kind: type[np.integer]) -> None:
+    """Each item copies up to 40 elements into a slot of its own; what no copy reaches stays."""
+    rng = np.random.default_rng(14)
+    source = rng.integers(-100, 100, 4096).astype(kind)
+    target = np.full(256 * 48, 7, kind)
+    ranges = np.column_stack(
+        [rng.integers(0, 4096 - 40, 256), np.arange(256) * 48, rng.integers(0, 41, 256)]
+    ).astype(np.uint64)
+    held = cp.asarray(target)
+    copying[256](cp.asarray(source), held, cp.asarray(ranges))
+
+    for start, to, count in ranges.astype(int):
+        target[to : to + count] = source[start : start + count]
+    assert held.get().tolist() == target.tolist()
+
+
+def test_pack_gives_up_to_sixteen_bytes_as_two_words_zero_above_them() -> None:
+    """Every count from 0 to 16, at any offset; no byte past the range is read into the words."""
+    rng = np.random.default_rng(15)
+    chars = rng.integers(1, 256, 1024, dtype=np.uint8)
+    ranges = np.column_stack([rng.integers(0, 1024 - 16, 340), np.tile(np.arange(17), 20)])
+    held = cp.zeros((340, 2), np.uint64)
+    packing[340](cp.asarray(chars), cp.asarray(ranges.astype(np.uint64)), held)
+
+    padded = [np.pad(chars[a : a + n], (0, 16 - n)) for a, n in ranges]
+    assert held.get().tolist() == np.array(padded).view(np.uint64).tolist()

@@ -90,7 +90,10 @@ line-length = 99
 target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+select = ["E", "F", "I", "UP", "B", "SIM", "TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"dataclasses".msg = "Declare a value with patos.bases: Model, FrozenModel, FlexModel or FrozenFlexModel."
 
 [tool.ruff.format]
 # MkDocs include directives inside Python fences are not Python expressions.
@@ -108,28 +111,6 @@ ignore-missing-imports = ["numpy", "torch", "numba", "numba.*", "llvmlite", "llv
 # the same on every host and rests on the host code that calls them.
 replace-imports-with-any = ["numba", "numba.*", "llvmlite", "llvmlite.*", "cupy", "cupy.*", "cuda.*"]
 
-# A device function returns a plain `-1` or a `u64` payload where its annotation says `i64`,
-# because `device` converts every `return` to the annotation, a rewrite no checker sees.
-[[tool.pyrefly.sub-config]]
-matches = "src/patos/cuda/primitives/hash.py"
-
-[tool.pyrefly.sub-config.errors]
-bad-return = false
-
-# A device function declares a local from a plain literal (`slot: i32 = -1`), because `device`
-# converts every assignment to the declaration, a rewrite no checker sees.
-[[tool.pyrefly.sub-config]]
-matches = "src/patos/cuda/primitives/warp.py"
-
-[tool.pyrefly.sub-config.errors]
-bad-assignment = false
-
-[[tool.pyrefly.sub-config]]
-matches = "src/patos/cuda/primitives/block.py"
-
-[tool.pyrefly.sub-config.errors]
-bad-assignment = false
-
 # A lane operation passes a word where lanes are declared, an int literal where a `u32` is, and
 # returns a word where lanes are, because `device` converts every argument and return.
 [[tool.pyrefly.sub-config]]
@@ -138,15 +119,6 @@ matches = "src/patos/cuda/primitives/bits.py"
 [tool.pyrefly.sub-config.errors]
 bad-argument-type = false
 bad-return = false
-
-# A `Struct` subclass becomes a named tuple of fields read at class creation, which pyrefly takes for
-# a malformed functional `namedtuple` definition, since it expects the field names spelled out.
-[[tool.pyrefly.sub-config]]
-matches = "src/patos/cuda/typed/struct.py"
-
-[tool.pyrefly.sub-config.errors]
-bad-class-definition = false
-invalid-argument = false
 
 [tool.ty.environment]
 python-version = "3.14"
@@ -166,13 +138,6 @@ include = ["src/patos/torch/**", "src/patos/cuda/**"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 
-# The same device-return rewrite as pyrefly's `bad-return` sub-config above.
-[[tool.ty.overrides]]
-include = ["src/patos/cuda/primitives/hash.py"]
-
-[tool.ty.overrides.rules]
-invalid-return-type = "ignore"
-
 # The same converted arguments and returns as pyrefly's `bits.py` sub-config above.
 [[tool.ty.overrides]]
 include = ["src/patos/cuda/primitives/bits.py"]
@@ -180,20 +145,6 @@ include = ["src/patos/cuda/primitives/bits.py"]
 [tool.ty.overrides.rules]
 invalid-argument-type = "ignore"
 invalid-return-type = "ignore"
-
-# The same declared locals as pyrefly's `bad-assignment` sub-configs above.
-[[tool.ty.overrides]]
-include = ["src/patos/cuda/primitives/warp.py", "src/patos/cuda/primitives/block.py"]
-
-[tool.ty.overrides.rules]
-invalid-assignment = "ignore"
-
-# An intrinsic's stub declares only a signature; `ptx` supplies its body.
-[[tool.ty.overrides]]
-include = ["src/patos/cuda/primitives/warp.py", "src/patos/cuda/primitives/scalar.py"]
-
-[tool.ty.overrides.rules]
-empty-body = "ignore"
 
 # mcmr reads a Numba CUDA function only through a literal `cuda.jit` decorator, so `device` and
 # `kernel`, which wrap it, earn none of its device-code exemptions. Each entry names its reason.
@@ -245,15 +196,21 @@ exclude = ["src/patos/cuda/primitives/__init__.py", "src/patos/cuda/primitives/h
 exclude = ["tests/test_cuda_types.py"]
 
 # A declared tuple type is a tuple reading that `isinstance` tells from every other, and
-# `Signature` is frozen: these tuples are the domain, not a choice of collection.
+# `Signature` is frozen, as are the parameter types that key a dispatched name's implementations:
+# these tuples are the domain, not a choice of collection.
 [tool.mcmr.rules."PY-COLL0004"]
 exclude = [
   "src/patos/cuda/typed/declarations.py",
   "src/patos/cuda/typed/decorators.py",
   "src/patos/cuda/typed/intrinsics.py",
+  "src/patos/cuda/typed/overloads.py",
   "src/patos/cuda/typed/reading.py",
   "src/patos/cuda/typed/rewrite.py",
 ]
+
+# The same tuples as the fields of the frozen models that hold them, hashed and compared.
+[tool.mcmr.rules."PY-PYDA0007"]
+exclude = ["src/patos/cuda/typed/declarations.py"]
 
 # The type reader meets AST constants as `bool` and `int`, a representation boundary.
 [tool.mcmr.rules."PY-INTE0001"]
@@ -263,16 +220,12 @@ exclude = [
   "src/patos/cuda/typed/rewrite.py",
 ]
 
-# A reading is built, hashed and compared per expression while a decorator runs, and the tests
-# build `IntLiteral(1)` positionally, so pydantic validation and keyword-only fields buy nothing.
-[tool.mcmr.rules."PY-MODE0005"]
-exclude = ["src/patos/cuda/typed/declarations.py"]
-
 # `left` and `right` are the operands of a binary operator, and `operand`, `other`, `target` and
 # `value` the AST nodes of an operation or a store. The bit and byte primitives keep the operand
 # order of the CUDA intrinsics they mirror (`__funnelshift_r(lo, hi, shift)`, `__dp4a`), and so
 # do the tests' stand-ins for them; a test kernel takes its input and output arrays; a Numba cast
-# takes the types it converts between.
+# takes the types it converts between. A division takes its dividend before its divisor as `//`
+# does, and a copy or a comparison names each array beside its offset and the count last.
 [tool.mcmr.rules."ALL-PARA0001"]
 exclude = [
   "src/patos/cuda/typed/arithmetic.py",
@@ -280,29 +233,34 @@ exclude = [
   "src/patos/cuda/typed/lanes.py",
   "src/patos/cuda/typed/rewrite.py",
   "tests/test_cuda_cxx.py",
+  "tests/test_cuda_primitives.py",
   "tests/test_cuda_simd.py",
   "src/patos/cuda/primitives/hash.py",
   "src/patos/cuda/primitives/bits.py",
   "src/patos/cuda/primitives/bytewise.py",
+  "src/patos/cuda/primitives/integers.py",
+  "src/patos/cuda/primitives/memory.py",
+  "src/patos/cuda/primitives/warp.py",
 ]
 
 # `ballot_prefix(flag)` is a device function that cutoken's kernels call positionally.
 [tool.mcmr.rules."ALL-PARA0003"]
 exclude = ["src/patos/cuda/primitives/warp.py"]
 
-# The typed test module keeps its records, device templates and helpers beside the scenarios
-# that use them.
+# The typed and primitives test modules keep their records, kernels and helpers beside the
+# scenarios that use them.
 [tool.mcmr.rules."ALL-MODU0001"]
-exclude = ["tests/test_cuda_types.py"]
+exclude = ["tests/test_cuda_primitives.py", "tests/test_cuda_types.py"]
 
 # The same closed families: each module keeps its record or protocol beside the one class using it,
 # the declaration forms sit together, an error beside the reading that raises it, the AST pass
 # beside the rewrite driving it, and the record metaclass beside its one base. A C++ unit sits
 # beside its compiler and headers, a lane type beside its model and the store it types, and a
 # numeric declaration beside the protocol it types. The hash records share one hash and one cuco
-# unit.
+# unit, and a block's operations sit beside the protocols that type them.
 [tool.mcmr.rules."ALL-MODU0005"]
 exclude = [
+  "src/patos/cuda/primitives/block.py",
   "src/patos/cuda/primitives/hash.py",
   "src/patos/cuda/runtime/memory.py",
   "src/patos/cuda/runtime/streams.py",
@@ -318,22 +276,24 @@ exclude = [
 
 # The same, counted in statements.
 [tool.mcmr.rules."ALL-MODU0006"]
-exclude = ["tests/test_cuda_types.py"]
+exclude = ["tests/test_cuda_primitives.py", "tests/test_cuda_simd.py", "tests/test_cuda_types.py"]
 
 # The house testing policy is maximum coverage from minimum test count: a test is one dense
 # scenario, and its helpers and fakes share the module. Splitting to the ceilings would multiply
 # the tests.
 [tool.mcmr.rules."ALL-TEST0003"]
-exclude = ["tests/test_cuda_simd.py", "tests/test_cuda_types.py"]
+exclude = ["tests/test_cuda_primitives.py", "tests/test_cuda_simd.py", "tests/test_cuda_types.py"]
 
 # `executed` compiles a template into a namespace, the only way to hand `inspect.getsource` device
 # code that carries the annotations under test, and the members test reads a host class's `vars`.
 # A class's device members, some wrapped in `property`, are found in its own namespace, and Numba's
 # `overload` jits the function it is handed, which only `exec` can give the member's parameters.
+# The purity test reads every PTX stub a primitive module defines from the module's `vars`.
 [tool.mcmr.rules."ALL-FUNC0011"]
 exclude = [
   "src/patos/cuda/typed/decorators.py",
   "src/patos/cuda/typed/records.py",
+  "tests/test_cuda_simd.py",
   "tests/test_cuda_types.py",
 ]
 
@@ -341,10 +301,10 @@ exclude = [
 [tool.mcmr.rules."PY-LOGG0001"]
 exclude = ["src/patos/cuda/typed/cxx.py"]
 
-# Each lane operation is one name over an implementation per lane kind and an overload per
-# implementation for type checkers, kept beside each other.
+# Each lane operation and each warp reduction is one name over an implementation per type, and
+# the stub type checkers read, kept beside each other.
 [tool.mcmr.rules."ALL-MODU0002"]
-exclude = ["src/patos/cuda/primitives/bits.py"]
+exclude = ["src/patos/cuda/primitives/bits.py", "src/patos/cuda/primitives/warp.py"]
 
 # `met` is the rules read over Numba's types, which the tests pin against `meet`, so it stays a
 # module function they import rather than moving into the typing rule that calls it.

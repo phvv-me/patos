@@ -48,6 +48,12 @@ def warp_in_block() -> i32:
 
 
 @device
+def threads_per_block() -> i32:
+    """How many threads the thread's block holds."""
+    return cuda.blockDim.x
+
+
+@device
 def thread_count() -> i64:
     """How many threads the grid holds."""
     return cuda.gridsize(1)

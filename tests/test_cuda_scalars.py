@@ -24,7 +24,7 @@ import numpy as np
 from patos.cuda.scalars import SPELLINGS, ArrayOf, Matrix, Subscript, i16, u8, u8x4, u32, u64
 
 print(json.dumps({
-    "array": Matrix[u8] == ArrayOf(np.uint8, 2),
+    "array": Matrix[u8] == ArrayOf(element=np.uint8, ndim=2),
     "scalar": type(u32(7)).__name__,
     "spelled": SPELLINGS[np.int16],
     "dtype": np.dtype(i16).name,
@@ -56,9 +56,10 @@ def test_the_numeric_types_import_without_numba_cupy_or_cuda() -> None:
 
 
 def test_vector_and_matrix_declare_arrays_of_a_numeric_type() -> None:
-    assert scalars.Vector[scalars.u8] == scalars.ArrayOf(np.uint8, 1)
-    assert scalars.Matrix[scalars.i16] == scalars.ArrayOf(np.int16, 2)
-    assert scalars.Vector[scalars.number] == scalars.ArrayOf(np.number, 1)
+    assert scalars.Vector[scalars.u8] == scalars.ArrayOf(element=np.uint8, ndim=1)
+    assert scalars.Matrix[scalars.i16] == scalars.ArrayOf(element=np.int16, ndim=2)
+    assert scalars.Vector[scalars.number] == scalars.ArrayOf(element=np.number, ndim=1)
+    assert scalars.Vector[scalars.f32] == scalars.ArrayOf(element=np.float32, ndim=1)
     with pytest.raises(TypeError, match="holds a numeric type"):
         operator.getitem(scalars.Vector, int)
 

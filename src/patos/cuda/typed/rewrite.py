@@ -15,12 +15,12 @@ import ast
 import copy
 import itertools
 from collections.abc import Sequence
-from dataclasses import dataclass
 from types import CodeType, FunctionType
 from typing import Protocol
 
 import numpy as np
 
+from ...bases import FrozenModel, Runtime
 from .. import scalars
 from ..scalars import Lanes, i32, i64
 from .declarations import Returns, Signature
@@ -36,16 +36,15 @@ class Helper(Protocol):
     def __call__(self) -> i32 | i64: ...
 
 
-@dataclass(frozen=True)
-class Items:
+class Items(FrozenModel):
     """Where a kernel's items start and how far apart they are, device functions of its `per`.
 
     first: gives the thread's first item.
     stride: gives the step to its next, None for a kernel that does not stride.
     """
 
-    first: Helper
-    stride: Helper | None
+    first: Runtime[Helper]
+    stride: Runtime[Helper | None]
 
     def bindings(self) -> dict[str, Helper]:
         """The device functions by the reserved names a rewritten loop calls them by."""
@@ -82,7 +81,7 @@ class Rewrite:
         rebuilt.__doc__ = original.__doc__
         rebuilt.__qualname__ = original.__qualname__
         rebuilt.__dict__["device_signature"] = Signature(
-            tuple(self.reading.parameters.values()), self.reading.returns
+            parameters=tuple(self.reading.parameters.values()), returns=self.reading.returns
         )
         return rebuilt
 
