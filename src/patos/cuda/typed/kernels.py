@@ -25,6 +25,7 @@ from numba import cuda, types
 from numba.cuda.np.numpy_support import as_dtype
 
 from ..scalars import ArrayOf, converted
+from . import shims
 from .arguments import argument
 from .declarations import is_scalar, named
 from .decorators import is_member, made_for, read_bound
@@ -40,6 +41,8 @@ from .rewrite import Helper, Items, Rewrite
 
 if TYPE_CHECKING:
     from .struct import Struct
+
+shims.apply()
 
 _WARP = 32
 # The most blocks a striding kernel takes, many waves on any GPU.
