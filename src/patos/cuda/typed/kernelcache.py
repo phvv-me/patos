@@ -16,7 +16,7 @@ from .kernelfiles import Cache
 
 
 class Persistent(CUDADispatcher):
-    """A kernel dispatcher that keeps its compiled kernels in the cache of the sources imported.
+    """A kernel dispatcher that keeps its compiled kernels in the cache of the sources it reaches.
 
     The folder is chosen at the first compile, when every module the kernel names is imported.
     """

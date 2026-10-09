@@ -288,9 +288,11 @@ exclude = ["tests/test_cuda_primitives.py", "tests/test_cuda_simd.py", "tests/te
 # code that carries the annotations under test, and the members test reads a host class's `vars`.
 # A class's device members, some wrapped in `property`, are found in its own namespace, and Numba's
 # `overload` jits the function it is handed, which only `exec` can give the member's parameters.
-# The purity test reads every PTX stub a primitive module defines from the module's `vars`.
+# The purity test reads every PTX stub a primitive module defines from the module's `vars`, and a
+# kernel's sources are found by following each module's globals, read from its `vars`.
 [tool.mcmr.rules."ALL-FUNC0011"]
 exclude = [
+  "src/patos/cuda/sources.py",
   "src/patos/cuda/typed/decorators.py",
   "src/patos/cuda/typed/records.py",
   "tests/test_cuda_simd.py",

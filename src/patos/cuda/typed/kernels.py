@@ -12,7 +12,8 @@ at their declared types, so a kernel compiles once, or once per dtype an open el
 
 A kernel compiles once for the sources it is made of and the host it runs on. The first process,
 cold with an empty cache, compiles and keeps it in the user's cache directory, and each later one,
-warm, loads it (`kernelcache`); a source edited anywhere moves the cache, so none loads stale.
+warm, loads it (`kernelcache`); an edit to any source its code can reach moves its cache, so none
+loads stale, and a process that imported other modules finds it all the same.
 """
 
 from collections.abc import Callable
