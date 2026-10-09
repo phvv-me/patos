@@ -17,14 +17,10 @@ from numba.cuda.core.imputils import impl_ret_borrowed
 from numba.cuda.cudadecl import registry as typing_registry
 from numba.cuda.cudaimpl import registry as lowering_registry
 from numba.cuda.dispatcher import CUDADispatcher
-from numba.cuda.extending import (
-    models,
-    overload,
-    overload_attribute,
-    overload_method,
-    register_model,
-)
+from numba.cuda.extending import models, overload, register_model
 from numba.cuda.typing.templates import AttributeTemplate
+
+from .members import Members
 
 if TYPE_CHECKING:
     from .struct import Struct
@@ -36,7 +32,7 @@ _BUILTINS: dict[str, Callable] = {"__len__": len, "__abs__": abs}
 class RecordType(types.Type):
     """The device type of one record class over the types its fields hold.
 
-    Each record class has its own subclass, which its device members are registered on.
+    Each record class has its own subclass, so a device operator is registered on it.
     """
 
     cls: ClassVar[type[Struct]]
@@ -62,6 +58,8 @@ class _Fields(AttributeTemplate):
     key = RecordType
 
     def generic_resolve(self, record: RecordType, attr: str) -> types.Type | None:
+        if (member := _RECORDS.resolved(self.context, record, attr)) is not None:
+            return member
         if attr in record.constants:
             return types.literal(record.constants[attr])
         return record.members.get(attr)
@@ -74,6 +72,10 @@ def _field(context, builder: ir.IRBuilder, record: RecordType, value: ir.Value, 
         return context.get_constant(types.literal(constant).literal_type, constant)
     fields = cgutils.create_struct_proxy(record)(context, builder, value=value)
     return impl_ret_borrowed(context, builder, record.members[attr], getattr(fields, attr))
+
+
+# A record's class is the one its Numba type was made for.
+_RECORDS = Members(RecordType, lambda record: record.cls, _field)
 
 
 @cache
@@ -93,13 +95,10 @@ def register_member(
     attribute is read without a call, and any other name is a method.
     """
     owner = record_type(cls)
-    typing = _overload(owner, device)
-    if attribute:
-        overload_attribute(owner, name)(typing)
-    elif name.startswith("__"):
-        overload(_BUILTINS.get(name) or getattr(operator, name))(typing)
+    if name.startswith("__"):
+        overload(_BUILTINS.get(name) or getattr(operator, name))(_overload(owner, device))
     else:
-        overload_method(owner, name)(typing)
+        _RECORDS.register(cls, name, device, attribute=attribute)
 
 
 def _overload(owner: type[RecordType], device: CUDADispatcher) -> Callable:
