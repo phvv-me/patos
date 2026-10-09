@@ -17,6 +17,7 @@ _EXTRAS = {
     "test_cuda_probe.py": _CUDA,
     "test_cuda_cxx.py": _CUDA,
     "test_cuda_cxx_host.py": _CUDA,
+    "test_cuda_graphs.py": _CUDA,
     "test_cuda_intrinsics.py": _CUDA,
     "test_cuda_kernelcache.py": _CUDA,
     "test_cuda_members.py": _CUDA,

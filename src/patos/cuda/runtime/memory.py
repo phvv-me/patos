@@ -43,7 +43,11 @@ class ArrayModule[V](Protocol):
 
 class Workspace[V: DeviceBuffer]:
     """Device scratch buffers reused across calls, grown to the largest request seen, handed out
-    as the array module's own arrays."""
+    as the array module's own arrays.
+
+    generation: counts the buffers allocated, so a recording of work that ran in them (see
+        `graphs`) knows whether they are still the ones it wrote.
+    """
 
     def __init__(self, arrays: ArrayModule[V]) -> None:
         """Hold scratch for one array module.
@@ -54,6 +58,7 @@ class Workspace[V: DeviceBuffer]:
         self.buffers: dict[str, V] = {}
         self.retained: list[V] = []
         self.retention_depth = 0
+        self.generation = 0
 
     def __iter__(self) -> Iterator[str]:
         """Iterate the roles currently held."""
@@ -82,6 +87,7 @@ class Workspace[V: DeviceBuffer]:
                 self.retained.append(held)
             held = self.arrays.empty(max(size, 1), dtype=dtype)
             self.buffers[role] = held
+            self.generation += 1
         return held[:size]
 
     def zeros(self, role: str, size: int, dtype: DTypeLike) -> V:

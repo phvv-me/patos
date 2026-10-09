@@ -56,9 +56,11 @@ class WorkspaceMachine(RuleBasedStateMachine):
     @rule(role=roles, size=st.integers(0, 40), dtype=dtypes, zeroed=st.booleans())
     def take(self, role: str, size: int, dtype: type[np.generic], *, zeroed: bool) -> None:
         before = self.workspace.buffers.get(role)
+        generation = self.workspace.generation
         view = (self.workspace.zeros if zeroed else self.workspace.take)(role, size, dtype)
         held = self.workspace.buffers[role]
         reused = before is not None and before.dtype == dtype and before.shape[0] >= size
+        assert self.workspace.generation == generation + (not reused)
         if before is not None and not reused and self.scopes:
             self.replaced.append(before)
         self.roles.setdefault(role)

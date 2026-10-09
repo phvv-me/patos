@@ -36,6 +36,11 @@ class Stream(Protocol):
         """Restore the stream context."""
         ...
 
+    @property
+    def ptr(self) -> int:
+        """The stream's handle, which is 0 for the default stream."""
+        ...
+
     def synchronize(self) -> None:
         """Wait for queued work to finish."""
         ...
