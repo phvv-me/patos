@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from patos.cuda.primitives import bytewise
-from patos.cuda.typed import Kernel, items, kernel, number, u8, unsigned
+from patos.cuda.typed import Kernel, Vector, items, kernel, number, u8, unsigned
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
@@ -26,7 +26,7 @@ def applying(name: str) -> Kernel:
     function = getattr(bytewise, name)
 
     @kernel
-    def apply(words: unsigned[int], held: number[int]) -> None:
+    def apply(words: Vector[unsigned], held: Vector[number]) -> None:
         for item in items(words.size):
             held[item] = function(words[item])
 
@@ -39,7 +39,7 @@ def applying_with(name: str) -> Kernel:
     function = getattr(bytewise, name)
 
     @kernel
-    def apply(words: unsigned[int], held: number[int], byte: u8) -> None:
+    def apply(words: Vector[unsigned], held: Vector[number], byte: u8) -> None:
         for item in items(words.size):
             held[item] = function(words[item], byte)
 
@@ -52,7 +52,7 @@ def applying_between(name: str) -> Kernel:
     function = getattr(bytewise, name)
 
     @kernel
-    def apply(words: unsigned[int], held: number[int], bounds: u8[int]) -> None:
+    def apply(words: Vector[unsigned], held: Vector[number], bounds: Vector[u8]) -> None:
         for item in items(words.size):
             held[item] = function(words[item], bounds[0], bounds[1])
 

@@ -29,7 +29,7 @@ class Struct:
     """A frozen record of device values, declared like a model and passed to a kernel as one
     argument.
 
-    A subclass annotates its fields (`slots: u64[int]`, `mask: u64`, a default making a field
+    A subclass annotates its fields (`slots: Vector[u64]`, `mask: u64`, a default making a field
     optional). Building one validates every field: a scalar converts to its declared type, a host
     array uploads, and an array of another element or dimension count, or a record of another
     class, fails, all of them reported at once. Numba sees a record as a C struct of its fields,

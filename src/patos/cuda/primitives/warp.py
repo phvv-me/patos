@@ -9,7 +9,7 @@ also reports whether the source lane exists, so the add needs no lane test.
 
 from collections.abc import Callable
 
-from ..typed import cuda, device, i32, lane, ptx, u32
+from ..typed import Vector, cuda, device, i32, lane, ptx, u32
 
 # The lane mask naming all 32 lanes of a warp.
 _FULL_WARP = 0xFFFFFFFF
@@ -98,7 +98,7 @@ def first(mask: u32) -> i32:
 
 
 @device
-def reserve(counter: i32[int], flag: bool) -> i32:
+def reserve(counter: Vector[i32], flag: bool) -> i32:
     """The slot each lane that set `flag` claims at the end of `counter[0]`, -1 for the others.
 
     A lane with nothing to append passes False. The flagged lanes of the warp take consecutive

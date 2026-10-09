@@ -1,14 +1,14 @@
 """Device code in plain, annotated Python on numba-cuda, read the way C reads declarations.
 
 Numba ignores annotations, so `device` and `kernel` read them first. Every parameter and every
-return carries one. A numeric type is a scalar (`i32`) and, subscripted by its shape, an array of
-it (`u8[int]`, `i16[int, int]`, `patos.cuda.scalars`), and packed lanes (`u8x4`) are a 32-bit
-register read lane by lane (`lanes`). A device function compiles at the types its parameters
-declare, a kernel's launch converts its scalars and refuses an array of another element or
-dimension count, the return annotation converts every `return`, and a declared local
-(`cursor: u64 = 0`) keeps its type through every later assignment (`rewrite`). Integer arithmetic
-meets the way C's does (`arithmetic`). An alias of a numeric type (`Index = i32`) declares like
-the type it names.
+return carries one. A numeric type is a scalar (`i32`), `Vector[T]` and `Matrix[T]` are arrays of
+one and two dimensions of it (`Vector[u8]`, `Matrix[i16]`, `patos.cuda.scalars`), and packed lanes
+(`u8x4`) are a 32-bit register read lane by lane (`lanes`). A device function compiles at the
+types its parameters declare, a kernel's launch converts its scalars and refuses an array of
+another element or dimension count, the return annotation converts every `return`, and a declared
+local (`cursor: u64 = 0`) keeps its type through every later assignment (`rewrite`). Integer
+arithmetic meets the way C's does (`arithmetic`). An alias of a numeric type (`Index = i32`)
+declares like the type it names.
 
 Since the annotations already say what every value converts to, the decorators raise
 `AnnotationError` at import for an incomplete signature, a name declared two ways, or a cast that
@@ -32,6 +32,8 @@ from numba import cuda
 
 from ..scalars import (
     Constant,
+    Matrix,
+    Vector,
     i8x4,
     i16,
     i16x2,
@@ -64,9 +66,9 @@ from .reading import AnnotationError
 from .struct import Struct
 
 __all__ = [
-    "AnnotationError", "Compiler", "Constant", "Cxx", "Headers", "Kernel", "Per", "Struct",
-    "block_index", "cccl", "cuda", "device", "dispatched", "i8x4", "i16", "i16x2", "i32", "i64",
-    "items", "items_through", "kernel", "lane", "number", "ptx", "thread_in_block",
-    "thread_index", "u8", "u8x4", "u16", "u16x2", "u32", "u64", "unsigned", "warp_in_block",
-    "warp_index",
+    "AnnotationError", "Compiler", "Constant", "Cxx", "Headers", "Kernel", "Matrix", "Per",
+    "Struct", "Vector", "block_index", "cccl", "cuda", "device", "dispatched", "i8x4", "i16",
+    "i16x2", "i32", "i64", "items", "items_through", "kernel", "lane", "number", "ptx",
+    "thread_in_block", "thread_index", "u8", "u8x4", "u16", "u16x2", "u32", "u64", "unsigned",
+    "warp_in_block", "warp_index",
 ]  # fmt: skip

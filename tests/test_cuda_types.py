@@ -13,7 +13,7 @@ from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from functools import cache
 from types import FunctionType, ModuleType, SimpleNamespace
-from typing import NamedTuple
+from typing import NamedTuple, TypeAliasType
 
 import cupy as cp
 import numpy as np
@@ -35,8 +35,10 @@ from patos.cuda.typed import (
     AnnotationError,
     Constant,
     Kernel,
+    Matrix,
     Per,
     Struct,
+    Vector,
     block_index,
     cuda,
     device,
@@ -132,7 +134,7 @@ _SOURCES = itertools.count()
 class Tables(Struct):
     """An open-addressed table: its slots, the mask a key hashes by, and a shift."""
 
-    slots: u64[int]
+    slots: Vector[u64]
     mask: u32
     shift: i32
 
@@ -141,19 +143,19 @@ class Lookup(Struct):
     """A record of a record, keys of any unsigned element, the rows a probe fills, and a flag."""
 
     tables: Tables
-    keys: unsigned[int]
-    found: u64[int, int]
+    keys: Vector[unsigned]
+    found: Matrix[u64]
     exact: bool = True
 
 
 class Window(Struct):
     """A record whose width is part of its device type, sizing a local array as a literal."""
 
-    values: u64[int]
+    values: Vector[u64]
     width: Constant[int]
 
     @kernel
-    def sums(self, out: u64[int]) -> None:
+    def sums(self, out: Vector[u64]) -> None:
         """Each thread sums the `width` values from its own, staged through a local array."""
         start = cuda.grid(1)
         if start + self.width <= self.values.size:
@@ -174,7 +176,7 @@ class Span(NamedTuple):
 class Viewed(NamedTuple):
     """A window of bytes: the bytes and where it opens."""
 
-    data: u8[int]
+    data: Vector[u8]
     base: i64
 
 
@@ -199,7 +201,7 @@ class Unfit(NamedTuple):
 
 
 @kernel
-def total(values: unsigned[int], sums: u64[int]) -> None:
+def total(values: Vector[unsigned], sums: Vector[u64]) -> None:
     """Add every value into `sums[0]`."""
     item = cuda.grid(1)
     if item < values.size:
@@ -208,7 +210,7 @@ def total(values: unsigned[int], sums: u64[int]) -> None:
 
 @kernel
 def looked_up(
-    table: PairTable, members: Filter, flags: Bitmap, keys: u64[int], found: i64[int, int]
+    table: PairTable, members: Filter, flags: Bitmap, keys: Vector[u64], found: Matrix[i64]
 ) -> None:
     """Each thread answers its key through the three hash records, flags by its low ten bits."""
     item = cuda.grid(1)
@@ -223,13 +225,14 @@ def noop(count: i32) -> None:
     """A kernel body the grid tests never launch."""
 
 
-def member(self, out: u64[int]) -> None:
+def member(self, out: Vector[u64]) -> None:
     """A kernel body taking `self`, which only a record class gives it."""
 
 
-_NAMESPACE: dict[str, Callable | type | ModuleType] = {
+_NAMESPACE: dict[str, Callable | type | TypeAliasType | ModuleType] = {
     "u8": u8, "u16": u16, "u32": u32, "u64": u64, "i16": i16, "i32": i32, "i64": i64,
-    "number": number, "unsigned": unsigned, "Struct": Struct, "Tables": Tables, "Per": Per,
+    "number": number, "unsigned": unsigned, "Vector": Vector, "Matrix": Matrix,
+    "Struct": Struct, "Tables": Tables, "Per": Per,
     "cuda": cuda, "device": device, "kernel": kernel, "ptx": ptx, "np": np, "items": items,
     "items_through": items_through, "lane": lane, "thread_index": thread_index,
     "warp_index": warp_index, "block_index": block_index, "thread_in_block": thread_in_block,
@@ -271,7 +274,7 @@ _DEVICE = executed(
     class Hashed(Struct):
         """A table read on the device through operators, a property and a method."""
 
-        slots: u64[int]
+        slots: Vector[u64]
         mask: u32
         shift: i32
 
@@ -301,8 +304,8 @@ _DEVICE = executed(
         """A hashed table, keys of any unsigned element, the rows a probe fills, and a flag."""
 
         hashed: Hashed
-        keys: unsigned[int]
-        found: u64[int, int]
+        keys: Vector[unsigned]
+        found: Matrix[u64]
         exact: bool = True
 
         @kernel(per=Per.WARP, threads=64)
@@ -321,7 +324,7 @@ _DEVICE = executed(
 
     @kernel
     def scatter(
-        row: i64[int], table: i16[int, int], small: u8, signed: i16, wide: u32, flag: bool
+        row: Vector[i64], table: Matrix[i16], small: u8, signed: i16, wide: u32, flag: bool
     ) -> None:
         """Write each scalar where the host reads it back, `signed` at the table's last corner."""
         row[0] = small
@@ -332,12 +335,12 @@ _DEVICE = executed(
 
 
     @device
-    def first(values: u8[int]) -> u8:
+    def first(values: Vector[u8]) -> u8:
         return values[0]
 
 
     @kernel
-    def delegate(values: i32[int], out: u8[int]) -> None:
+    def delegate(values: Vector[i32], out: Vector[u8]) -> None:
         """Hand `values` to a device function declaring another element."""
         out[0] = first(values)
     '''
@@ -547,7 +550,7 @@ _UNSTANDING: dict[str, tuple[Decorator, str, str]] = {
     "no device type": (device, "def f(x: str) -> None:\n    pass\n", "`str` names no device type"),
     "array returned": (
         device,
-        "def f(x: {kind}) -> {kind}[int]:\n    return x\n",
+        "def f(x: {kind}) -> Vector[{kind}]:\n    return x\n",
         "a device function returns no array",
     ),
     "record of an array returned": (
@@ -557,12 +560,12 @@ _UNSTANDING: dict[str, tuple[Decorator, str, str]] = {
     ),
     "array local": (
         device,
-        "def f(x: {kind}) -> None:\n    y: {kind}[int] = x\n",
+        "def f(x: {kind}) -> None:\n    y: Vector[{kind}] = x\n",
         "`y` declares an array",
     ),
     "subscript declared": (
         device,
-        "def f(x: {kind}[int]) -> None:\n    x[0]: {kind} = 1\n",
+        "def f(x: Vector[{kind}]) -> None:\n    x[0]: {kind} = 1\n",
         "`x[0]` is no name to declare",
     ),
     "local twice": (
@@ -706,18 +709,24 @@ def test_an_annotation_that_cannot_stand_is_refused_line_by_line(
     assert all(re.match(r"<patos-cuda-test-\d+>:\d+: f: ", line) for line in message.splitlines())
 
 
-@given(name=st.sampled_from(list(_ELEMENTS.values())), dims=st.integers(1, 3), data=st.data())
-def test_a_numeric_type_is_a_scalar_and_by_int_per_dimension_an_array(
-    *, name: str, dims: int, data: st.DataObject
+@given(
+    name=st.sampled_from(list(_ELEMENTS.values())),
+    array=st.sampled_from(["Vector", "Matrix"]),
+    shape=st.sampled_from(["int", "int, int", "3", ":", "float", "int, 2", "str, int"]),
+)
+def test_a_numeric_type_is_a_scalar_and_in_a_vector_or_a_matrix_an_array(
+    *, name: str, array: str, shape: str
 ) -> None:
-    """Called, a numeric type is its numpy scalar; subscripted, an array, of `int`s alone."""
+    """Called, a numeric type is its numpy scalar; in `Vector` or `Matrix`, an array of it."""
     element = next(kind for kind, short in _ELEMENTS.items() if short == name)
-    shape = ", ".join(["int"] * dims)
-    wrong = data.draw(st.sampled_from(["3", ":", "float", f"{shape}, 2", f"str, {shape}"]))
 
-    assert annotation(f"{name}[{shape}]") == ArrayOf(element, dims)
-    with pytest.raises(TypeError, match=f"{name}\\[.*\\]: an array names each dimension `int`"):
-        annotation(f"{name}[{wrong}]")
+    assert annotation(f"{array}[{name}]") == ArrayOf(
+        element, ("Vector", "Matrix").index(array) + 1
+    )
+    with pytest.raises(TypeError, match=re.escape(f"{name}[...] declares no array; write ")):
+        annotation(f"{name}[{shape}]")
+    with pytest.raises(TypeError, match=f"{array}\\[.*\\]: an array holds a numeric type"):
+        annotation(f"{array}[{shape}]")
     assert [type(kind(7)) for kind in (u8, u16, u32, u64, i16, i32, i64)] == [
         np.uint8, np.uint16, np.uint32, np.uint64, np.int16, np.int32, np.int64
     ]  # fmt: skip
@@ -755,7 +764,7 @@ _REDUNDANT = {
         "the return annotation converts to {kind}",
     ),
     "store into an array converts": (
-        "def f(out: {kind}[int], x: {other}) -> None:\n    out[0] = {kind}(x)\n",
+        "def f(out: Vector[{kind}], x: {other}) -> None:\n    out[0] = {kind}(x)\n",
         "the store into `out` converts to {kind}",
     ),
     "callee's parameter converts": (
@@ -848,7 +857,7 @@ def test_a_rebuilt_function_keeps_its_name_docstring_globals_and_signature() -> 
     """
     original = defined(
         '''
-        def f(a: u32, b: u32, out: u64[int]) -> u64:
+        def f(a: u32, b: u32, out: Vector[u64]) -> u64:
             """Widen before the product."""
             total: u64 = u64(a) * b
             out[0] = total
@@ -874,7 +883,7 @@ def test_a_type_parameter_is_left_alone_and_a_type_alias_declares_its_type() -> 
 _DECLARING = """
 type Pair = tuple[{second}, {third}]
 
-def f[T](x: {first}, pair: Pair, other: T, values: {element}[{shape}]) -> {first}:
+def f[T](x: {first}, pair: Pair, other: T, values: {array}[{element}]) -> {first}:
     return x
 """
 
@@ -905,7 +914,6 @@ def test_a_device_function_compiles_at_the_types_its_parameters_declare(
     typing error naming the parameter otherwise.
     """
     first, second, third = kinds
-    shape = ", ".join(["int"] * dims)
     function = dispatched(
         defined(
             _DECLARING,
@@ -913,7 +921,7 @@ def test_a_device_function_compiles_at_the_types_its_parameters_declare(
             second=second,
             third=third,
             element=_ELEMENTS[element],
-            shape=shape,
+            array=("Vector", "Matrix")[dims - 1],
         )
     )
     admitted = array.ndim == dims and np.issubdtype(as_dtype(array.dtype), element)
@@ -1088,7 +1096,7 @@ def test_a_ptx_call_takes_the_stubs_declared_types_which_the_checks_read(
     ("template", "error", "message"),
     [
         ("def f(value: u8) -> i32:\n    ...\n", AnnotationError, "16, 32 or 64 bits"),
-        ("def f(value: i32[int]) -> i32:\n    ...\n", AnnotationError, "declares no scalar"),
+        ("def f(value: Vector[i32]) -> i32:\n    ...\n", AnnotationError, "declares no scalar"),
         ("def f(other: i32) -> i32:\n    ...\n", KeyError, "value"),
     ],
 )
@@ -1233,7 +1241,7 @@ _REFUSALS: dict[str, tuple[Refusal, type[Exception], str]] = {
             Workspace(cp), tables=tables, keys=2, found=cp.zeros((1, 6), np.uint64)
         ),
         TypeError,
-        "Lookup.keys declares unsigned[int], which has no one dtype to take",
+        "Lookup.keys declares Vector[unsigned], which has no one dtype to take",
     ),
     "a strided device array, where the record marshals": (
         lambda tables: argument(Tables(tables.slots[::2], 1, 2)),
@@ -1404,22 +1412,22 @@ _UNDECLARED = {
     "element": (
         lambda: scattered(row=cp.zeros(4, np.int32)),
         TypeError,
-        "scatter's `row` is array(int32, 1d, C), where i64[int] is declared",
+        "scatter's `row` is array(int32, 1d, C), where Vector[i64] is declared",
     ),
     "dimensions": (
         lambda: scattered(row=cp.zeros((2, 2), np.int64)),
         TypeError,
-        "scatter's `row` is array(int64, 2d, C), where i64[int] is declared",
+        "scatter's `row` is array(int64, 2d, C), where Vector[i64] is declared",
     ),
     "strided": (
         lambda: scattered(row=cp.zeros(8, np.int64)[::2]),
         TypeError,
-        "scatter's `row` is strided, not contiguous, where i64[int] is declared",
+        "scatter's `row` is strided, not contiguous, where Vector[i64] is declared",
     ),
     "transposed": (
         lambda: scattered(table=cp.zeros((3, 2), np.int16).T),
         TypeError,
-        "scatter's `table` is strided, not contiguous, where i16[int, int] is declared",
+        "scatter's `table` is strided, not contiguous, where Matrix[i16] is declared",
     ),
     "open element": (
         lambda: total[4](cp.zeros(4, np.int32), cp.zeros(1, np.uint64)),
@@ -1439,7 +1447,7 @@ _UNDECLARED = {
     "device call": (
         lambda: _DEVICE.delegate[1](cp.zeros(2, np.int32), cp.zeros(1, np.uint8)),
         TypingError,
-        "first's `values` receives array(int32, 1d, C) where u8[int] is declared",
+        "first's `values` receives array(int32, 1d, C) where Vector[u8] is declared",
     ),
 }
 
@@ -1460,7 +1468,7 @@ def test_a_launch_refuses_what_a_parameter_does_not_declare(
 
 @gpu
 def test_an_open_element_compiles_once_per_dtype_it_meets() -> None:
-    """`unsigned[int]` takes a CuPy or any other device array of each unsigned dtype it meets."""
+    """`Vector[unsigned]` takes a CuPy or any device array of each unsigned dtype it meets."""
     sums = cp.zeros(1, np.uint64)
     for values in (
         cp.arange(5, dtype=np.uint8),
@@ -1524,7 +1532,7 @@ def counting(per: Per, *, strided: bool) -> Kernel:
     leads = _LEADERS[per]
 
     @kernel(per=per, threads=64, strided=strided)
-    def visit(visits: i32[int], count: i32) -> None:
+    def visit(visits: Vector[i32], count: i32) -> None:
         for item in items(count):
             if leads():
                 visits[item] += 1
@@ -1535,7 +1543,7 @@ def counting(per: Per, *, strided: bool) -> Kernel:
 _EXITS = executed(
     """
     @kernel(strided=True, threads=32)
-    def even_below(visits: i32[int], live: i32[int], cap: i32) -> None:
+    def even_below(visits: Vector[i32], live: Vector[i32], cap: i32) -> None:
         for item in items_through(live[0]):
             if item % 2 == 1:
                 continue
@@ -1545,7 +1553,7 @@ _EXITS = executed(
 
 
     @kernel(strided=True, threads=1)
-    def growing(visits: i32[int], live: i32[int], cap: i32) -> None:
+    def growing(visits: Vector[i32], live: Vector[i32], cap: i32) -> None:
         for item in items(live[0]):
             visits[item] += 1
             if live[0] < cap:
@@ -1556,13 +1564,13 @@ _EXITS = executed(
 _LOOPS = executed(
     """
     @kernel(strided=True)
-    def thread_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def thread_items(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         for item in items(live[0]):
             out[item] = values[item] * 2
 
 
     @kernel(strided=True)
-    def thread_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def thread_hand(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         item = cuda.grid(1)
         stride = cuda.gridsize(1)
         while item < live[0]:
@@ -1571,14 +1579,14 @@ _LOOPS = executed(
 
 
     @kernel(per=Per.WARP, strided=True)
-    def warp_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def warp_items(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         for item in items(live[0]):
             if lane() == 0:
                 out[item] = values[item] * 2
 
 
     @kernel(per=Per.WARP, strided=True)
-    def warp_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def warp_hand(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         item = cuda.grid(1) // 32
         stride = cuda.gridsize(1) // 32
         while item < live[0]:
@@ -1588,14 +1596,14 @@ _LOOPS = executed(
 
 
     @kernel(per=Per.BLOCK, strided=True)
-    def block_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def block_items(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         for item in items(live[0]):
             if thread_in_block() == 0:
                 out[item] = values[item] * 2
 
 
     @kernel(per=Per.BLOCK, strided=True)
-    def block_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def block_hand(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         item = cuda.blockIdx.x
         stride = cuda.gridDim.x
         while item < live[0]:
@@ -1605,26 +1613,26 @@ _LOOPS = executed(
 
 
     @kernel
-    def guard_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def guard_items(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         for item in items(live[0]):
             out[item] = values[item] * 2
 
 
     @kernel
-    def guard_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def guard_hand(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         item = cuda.grid(1)
         if item < live[0]:
             out[item] = values[item] * 2
 
 
     @kernel(strided=True)
-    def through_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def through_items(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         for item in items_through(live[0]):
             out[item] = values[item] * 2
 
 
     @kernel(strided=True)
-    def through_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def through_hand(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         item = cuda.grid(1)
         stride = cuda.gridsize(1)
         while item <= live[0]:
@@ -1633,7 +1641,7 @@ _LOOPS = executed(
 
 
     @kernel(strided=True)
-    def continue_items(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def continue_items(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         for item in items(live[0]):
             if values[item] & 1:
                 continue
@@ -1641,7 +1649,7 @@ _LOOPS = executed(
 
 
     @kernel(strided=True)
-    def continue_hand(values: i32[int], out: i32[int], live: i32[int]) -> None:
+    def continue_hand(values: Vector[i32], out: Vector[i32], live: Vector[i32]) -> None:
         item = cuda.grid(1)
         stride = cuda.gridsize(1)
         while item < live[0]:
@@ -1669,8 +1677,8 @@ _IDENTITIES: dict[str, tuple[str, str, Callable[[int], int], type[np.integer]]] 
 _TILING = executed(
     """
     class Payload(Struct):
-        starts: i32[int]
-        ends: i32[int]
+        starts: Vector[i32]
+        ends: Vector[i32]
 
 
     class Tiling(Struct):
@@ -1682,11 +1690,13 @@ _TILING = executed(
             return payload.starts[tile] - self.padding, payload.ends[tile] + self.padding
 
         @device
-        def bounds_by_hand(self, starts: i32[int], ends: i32[int], tile: i64) -> tuple[i32, i32]:
+        def bounds_by_hand(
+            self, starts: Vector[i32], ends: Vector[i32], tile: i64
+        ) -> tuple[i32, i32]:
             return starts[tile] - self.padding, ends[tile] + self.padding
 
         @kernel(per=Per.WARP, threads=64)
-        def measure(self, payload: Payload, out: i32[int, int]) -> None:
+        def measure(self, payload: Payload, out: Matrix[i32]) -> None:
             tile = warp_index()
             if tile < out.shape[0] and lane() == 0:
                 first, last = self.bounds(payload)
@@ -1694,7 +1704,7 @@ _TILING = executed(
                 out[tile, 1] = last
 
         @kernel(per=Per.WARP, threads=64)
-        def measure_by_hand(self, payload: Payload, out: i32[int, int]) -> None:
+        def measure_by_hand(self, payload: Payload, out: Matrix[i32]) -> None:
             tile = cuda.grid(1) // 32
             if tile < out.shape[0] and cuda.laneid == 0:
                 first, last = self.bounds_by_hand(payload.starts, payload.ends, tile)
@@ -1747,7 +1757,7 @@ _NAMED = executed(
 
 
     @kernel
-    def named(centers: i64[int], reach: i64, data: u8[int], out: i64[int, int]) -> None:
+    def named(centers: Vector[i64], reach: i64, data: Vector[u8], out: Matrix[i64]) -> None:
         item = cuda.grid(1)
         if item < centers.size:
             span: Span = around(centers[item], reach)
@@ -1762,7 +1772,7 @@ _NAMED = executed(
 
 
     @kernel
-    def viewed(data: unsigned[int], out: i64[int]) -> None:
+    def viewed(data: Vector[unsigned], out: Vector[i64]) -> None:
         out[0] = peek(Viewed(data, 1), 1)
 
 
@@ -1772,7 +1782,7 @@ _NAMED = executed(
 
 
     @kernel
-    def misfit(out: i32[int]) -> None:
+    def misfit(out: Vector[i32]) -> None:
         out[0] = width(misfit_span())
     """
 )
@@ -1841,7 +1851,7 @@ _CONTEXTS = executed(
 
 
     @kernel
-    def walk_plain(chars: u8[int], out: i32[int]) -> None:
+    def walk_plain(chars: Vector[u8], out: Vector[i32]) -> None:
         item = cuda.grid(1)
         if item < out.size:
             context = opened_plain(item)
@@ -1853,7 +1863,7 @@ _CONTEXTS = executed(
 
 
     @kernel
-    def walk_named(chars: u8[int], out: i32[int]) -> None:
+    def walk_named(chars: Vector[u8], out: Vector[i32]) -> None:
         item = cuda.grid(1)
         if item < out.size:
             context = opened(item)
@@ -1914,7 +1924,7 @@ def test_an_identity_helper_gives_the_value_of_the_expression_it_names_in_the_sa
         executed(
             f"""
             @kernel(threads=128)
-            def f(out: i64[int]) -> None:
+            def f(out: Vector[i64]) -> None:
                 out[cuda.grid(1)] = {stored}
             """
         ).f
@@ -2170,7 +2180,7 @@ _MEMBERS = executed(
 
 
     @kernel
-    def methods(starts: i32[int], ends: i32[int], at: i32, out: i64[int, int]) -> None:
+    def methods(starts: Vector[i32], ends: Vector[i32], at: i32, out: Matrix[i64]) -> None:
         for item in items(starts.size):
             bounds = Bounds(starts[item], ends[item])
             room = Room(item, 64).reserve(starts[item] & 7)
@@ -2184,7 +2194,7 @@ _MEMBERS = executed(
 
 
     @kernel
-    def loose(starts: i32[int], ends: i32[int], at: i32, out: i64[int, int]) -> None:
+    def loose(starts: Vector[i32], ends: Vector[i32], at: i32, out: Matrix[i64]) -> None:
         for item in items(starts.size):
             start, end_ = starts[item], ends[item]
             base, capacity = reserve(item, 64, starts[item] & 7)
@@ -2199,17 +2209,17 @@ _MEMBERS = executed(
 
 
     @kernel
-    def misspelled(out: i32[int]) -> None:
+    def misspelled(out: Vector[i32]) -> None:
         out[0] = Bounds(1, 2).measure()
 
 
     @kernel
-    def unheld(out: i32[int]) -> None:
+    def unheld(out: Vector[i32]) -> None:
         out[0] = Bounds(1, 2).holds()
 
 
     @kernel
-    def overheld(out: i32[int]) -> None:
+    def overheld(out: Vector[i32]) -> None:
         out[0] = Bounds(1, 2).holds(1, 2)
 
 
@@ -2308,7 +2318,7 @@ _LANES = executed(
 
 
     @kernel(threads=32)
-    def converting(words: u32[int], out: u32[int, int]) -> None:
+    def converting(words: Vector[u32], out: Matrix[u32]) -> None:
         item = thread_index()
         lanes: u8x4 = words[item]
         out[item, 0] = lanes
@@ -2317,7 +2327,7 @@ _LANES = executed(
 
 
     @kernel(threads=32)
-    def copying(words: u32[int], out: u32[int, int]) -> None:
+    def copying(words: Vector[u32], out: Matrix[u32]) -> None:
         item = thread_index()
         out[item, 0] = words[item]
         out[item, 1] = words[item]
@@ -2325,19 +2335,19 @@ _LANES = executed(
 
 
     @kernel
-    def mismatched(words: u32[int], out: u32[int]) -> None:
+    def mismatched(words: Vector[u32], out: Vector[u32]) -> None:
         for item in items(words.size):
             out[item] = bits.absdiff(words[item], u8x4(words[item]))
 
 
     @kernel
-    def added(words: u32[int], out: u32[int]) -> None:
+    def added(words: Vector[u32], out: Vector[u32]) -> None:
         for item in items(words.size):
             out[item] = u8x4(words[item]) + 1
 
 
     @kernel
-    def narrowed(words: u32[int], out: u32[int]) -> None:
+    def narrowed(words: Vector[u32], out: Vector[u32]) -> None:
         for item in items(words.size):
             lanes: u8x4 = words[item]
             low = u8(lanes)
@@ -2345,13 +2355,13 @@ _LANES = executed(
 
 
     @kernel
-    def keyed(words: u32[int], out: u32[int]) -> None:
+    def keyed(words: Vector[u32], out: Vector[u32]) -> None:
         for item in items(words.size):
             out[item] = bits.absdiff(b=words[item], a=7)
 
 
     @kernel
-    def short(words: u32[int], out: u32[int]) -> None:
+    def short(words: Vector[u32], out: Vector[u32]) -> None:
         for item in items(words.size):
             out[item] = bits.absdiff(words[item])
     """
@@ -2403,28 +2413,28 @@ def test_lanes_convert_to_no_integer_narrower_than_their_word() -> None:
 _SHAPES = executed(
     """
     @kernel(strided=True, threads=32)
-    def nested(visits: i32[int], count: i32) -> None:
+    def nested(visits: Vector[i32], count: i32) -> None:
         for outer in items(count):
             for inner in items(count):
                 visits[outer] += 1
 
 
     @kernel(strided=True, threads=32)
-    def branched(visits: i32[int], count: i32, flag: i32) -> None:
+    def branched(visits: Vector[i32], count: i32, flag: i32) -> None:
         if flag > 0:
             for item in items(count):
                 visits[item] += 1
 
 
     @kernel(strided=True, threads=32)
-    def shifted(visits: i32[int], count: i32) -> None:
+    def shifted(visits: Vector[i32], count: i32) -> None:
         for item in items(count):
             item = item + 100
             visits[item - 100] = item
 
 
     @kernel(strided=True, threads=32)
-    def returning(visits: i32[int], count: i32) -> None:
+    def returning(visits: Vector[i32], count: i32) -> None:
         for item in items(count):
             if item % 32 == 5:
                 return
@@ -2432,7 +2442,7 @@ _SHAPES = executed(
 
 
     class Counted(Struct):
-        visits: i32[int]
+        visits: Vector[i32]
 
         @kernel(strided=True, threads=32)
         def count(self, count: i32) -> None:
@@ -2490,7 +2500,7 @@ def test_a_named_value_takes_its_defaults_and_its_keywords_in_the_order_of_its_f
 
 
         @kernel
-        def build(out: i64[int], at: i64) -> None:
+        def build(out: Vector[i64], at: i64) -> None:
             out[0] = reach(Stepped(at))
             out[1] = reach(Stepped(step=at, offset=at + 1))
             out[2] = reach(Stepped(at, step=2))
@@ -2522,7 +2532,7 @@ def test_a_function_without_parameters_inlines_into_its_callers_unless_it_stays_
 
 
         @kernel
-        def f(out: i32[int]) -> None:
+        def f(out: Vector[i32]) -> None:
             out[cuda.grid(1)] = folded() + kept()
         """
     ).f

@@ -13,8 +13,10 @@ from hypothesis import strategies as st
 from patos.cuda.primitives import block, scalar, search, warp
 from patos.cuda.typed import (
     Kernel,
+    Matrix,
     Per,
     Struct,
+    Vector,
     device,
     i32,
     i64,
@@ -77,11 +79,11 @@ def claimed_runs(taken: Sequence[int], flags: Sequence[bool]) -> list[list[int]]
 class Probes(Struct):
     """Ranges of sorted values to search for keys, and where the two bounds land."""
 
-    low: i64[int]
-    high: i64[int]
-    keys: number[int]
-    lower: i64[int]
-    upper: i64[int]
+    low: Vector[i64]
+    high: Vector[i64]
+    keys: Vector[number]
+    lower: Vector[i64]
+    upper: Vector[i64]
 
 
 @cache
@@ -90,7 +92,7 @@ def warp_reducing(name: str) -> Kernel:
     reduction = getattr(warp, name)
 
     @kernel(threads=32)
-    def reduce(values: number[int], held: i64[int]) -> None:
+    def reduce(values: Vector[number], held: Vector[i64]) -> None:
         for lane_item in items(values.size):
             held[lane_item] = reduction(values[lane_item])
 
@@ -106,7 +108,7 @@ def block_reducing(name: str, threads: int) -> Kernel:
     reduction = getattr(block.over(threads), name)
 
     @kernel(per=Per.BLOCK, threads=threads)
-    def reduce(values: i32[int], held: i64[int, int]) -> None:
+    def reduce(values: Vector[i32], held: Matrix[i64]) -> None:
         thread = thread_index()
         held[thread, 0] = reduction(values[thread])
         held[thread, 1] = reduction(values[thread] >> 1)
@@ -120,7 +122,7 @@ def block_scanning(threads: int) -> Kernel:
     across = block.over(threads)
 
     @kernel(per=Per.BLOCK, threads=threads)
-    def scan(values: i32[int], held: i64[int, int]) -> None:
+    def scan(values: Vector[i32], held: Matrix[i64]) -> None:
         thread = thread_index()
         before, total = across.exclusive_sum(values[thread])
         held[thread, 0] = before
@@ -140,11 +142,11 @@ def test_a_kernel_refuses_the_block_operations_made_for_another_size_of_block() 
         return wide.sum(halved)
 
     @kernel(per=Per.BLOCK, threads=128)
-    def directly(values: i32[int], held: i64[int]) -> None:
+    def directly(values: Vector[i32], held: Vector[i64]) -> None:
         held[thread_index()] = wide.sum(values[thread_index()])
 
     @kernel(per=Per.BLOCK, threads=128)
-    def through_a_function(values: i32[int], held: i64[int]) -> None:
+    def through_a_function(values: Vector[i32], held: Vector[i64]) -> None:
         held[thread_index()] = wide_total(values[thread_index()])
 
     for reduce in (directly, through_a_function):
@@ -161,13 +163,15 @@ def test_a_block_has_whole_warps_and_its_operations_are_made_once_per_size() -> 
 
 
 @kernel
-def first_lanes(masks: u32[int], held: i64[int]) -> None:
+def first_lanes(masks: Vector[u32], held: Vector[i64]) -> None:
     for item in items(masks.size):
         held[item] = warp.first(masks[item])
 
 
 @kernel(threads=32)
-def reserving(counter: i32[int], flags: u8[int], slots: i64[int], held: i32[int]) -> None:
+def reserving(
+    counter: Vector[i32], flags: Vector[u8], slots: Vector[i64], held: Vector[i32]
+) -> None:
     thread = thread_index()
     slot = warp.reserve(counter, flags[thread] != 0)
     slots[thread] = slot
@@ -176,13 +180,13 @@ def reserving(counter: i32[int], flags: u8[int], slots: i64[int], held: i32[int]
 
 
 @kernel
-def lowering(best: u32[int], values: i32[int], held: i64[int]) -> None:
+def lowering(best: Vector[u32], values: Vector[i32], held: Vector[i64]) -> None:
     for item in items(held.size):
         held[item] = scalar.min_nonnegative(best[item], values[item])
 
 
 @kernel
-def searching(values: number[int], probes: Probes) -> None:
+def searching(values: Vector[number], probes: Probes) -> None:
     for item in items(probes.keys.size):
         low, high, key = probes.low[item], probes.high[item], probes.keys[item]
         probes.lower[item] = search.lower_bound(values, search.Range(low, high), key)

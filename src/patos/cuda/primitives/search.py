@@ -6,7 +6,7 @@ from collections.abc import Callable
 from types import FunctionType
 from typing import NamedTuple
 
-from ..typed import device, i64, number
+from ..typed import Vector, device, i64, number
 
 
 class Range(NamedTuple):
@@ -24,7 +24,7 @@ def _search(name: str, before: Callable[..., bool], doc: str) -> FunctionType:
     doc: what it finds.
     """
 
-    def search[Key](values: number[int], within: Range, key: Key) -> i64:
+    def search[Key](values: Vector[number], within: Range, key: Key) -> i64:
         low, high = within
         while low < high:
             middle = low + ((high - low) >> 1)

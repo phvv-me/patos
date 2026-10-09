@@ -15,6 +15,8 @@ from patos.cuda.primitives import bits, memory
 from patos.cuda.typed import (
     AnnotationError,
     Kernel,
+    Matrix,
+    Vector,
     cuda,
     device,
     dispatched,
@@ -70,7 +72,9 @@ def store32(at: u64, value: u32) -> None:
 
 
 @kernel
-def effects(narrow: u32[int], wide: u64[int], held: u64[int, int], stored: u32[int]) -> None:
+def effects(
+    narrow: Vector[u32], wide: Vector[u64], held: Matrix[u64], stored: Vector[u32]
+) -> None:
     for item in items(wide.size):
         doubled, again = doubled_and_wide(narrow[item], wide[item])
         held[item, 0], held[item, 1] = doubled, again
@@ -78,7 +82,7 @@ def effects(narrow: u32[int], wide: u64[int], held: u64[int, int], stored: u32[i
 
 
 @kernel
-def mixing(table: u32[int, int]) -> None:
+def mixing(table: Matrix[u32]) -> None:
     """Columns 0 to 2 are the operands, and 3 and 4 get `permute` and `funnel`."""
     for item in items(table.shape[0]):
         first, second, third = table[item, 0], table[item, 1], table[item, 2]
@@ -108,12 +112,12 @@ def applying(operation: Callable, lanes: Sequence[Operand], *, summed: bool) -> 
     left, right = lanes
 
     @kernel
-    def apply(words: unsigned[int, int], out: unsigned[int]) -> None:
+    def apply(words: Matrix[unsigned], out: Vector[unsigned]) -> None:
         for item in items(out.size):
             out[item] = operation(left(words[0, item]), right(words[1, item]))
 
     @kernel
-    def accumulate(words: unsigned[int, int], out: unsigned[int]) -> None:
+    def accumulate(words: Matrix[unsigned], out: Vector[unsigned]) -> None:
         for item in items(out.size):
             out[item] = operation(left(words[0, item]), right(words[1, item]), words[2, item])
 
@@ -121,7 +125,7 @@ def applying(operation: Callable, lanes: Sequence[Operand], *, summed: bool) -> 
 
 
 @kernel
-def loading(wide: u64[int], narrow: u32[int], held: u64[int, int]) -> None:
+def loading(wide: Vector[u64], narrow: Vector[u32], held: Matrix[u64]) -> None:
     """Row `g` holds the word and the quad at element `4g` of `narrow`, the pair at `2g`."""
     for group in items(held.shape[0]):
         first, second, third, fourth = memory.load_quad(memory.address(narrow, 4 * group))
@@ -138,7 +142,7 @@ def loading(wide: u64[int], narrow: u32[int], held: u64[int, int]) -> None:
 
 
 @kernel
-def windowing(chars: u8[int], starts: u64[int], held: u64[int, int]) -> None:
+def windowing(chars: Vector[u8], starts: Vector[u64], held: Matrix[u64]) -> None:
     for item in items(starts.size):
         held[item, 0], held[item, 1] = memory.window(chars, starts[item])
 

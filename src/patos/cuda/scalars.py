@@ -1,11 +1,11 @@
 """The numeric types device code spells, importable where no CUDA stack is installed. Each is a
-scalar type and, subscripted by its shape, an array of it: `u8[int]` a vector, `i16[int, int]` a
-table, as numba spells `uint8[:]` and `int16[:, :]`. Called, a type converts a value to its scalar
-(`u64(first)`).
+scalar type: called, it converts a value to its scalar (`u64(first)`). `Vector[T]` is an array of
+one dimension of the numeric type `T` and `Matrix[T]` one of two, as numba spells `uint8[:]` and
+`int16[:, :]`: `Vector[u8]`, `Matrix[i16]`.
 
 `number` and `unsigned` are open element types, for an array whose element is any number or any
-unsigned integer (`unsigned[int]`). `u8x4`, `i8x4`, `u16x2` and `i16x2` are packed lanes, a 32-bit
-register read as four bytes or two halves, which `primitives.bits` picks its instruction by.
+unsigned integer (`Vector[unsigned]`). `u8x4`, `i8x4`, `u16x2` and `i16x2` are packed lanes, a
+32-bit register read as four bytes or two halves, which `primitives.bits` picks its instruction by.
 """
 
 from dataclasses import dataclass
@@ -179,9 +179,9 @@ if TYPE_CHECKING:
         def __int__(self) -> int: ...
         def __index__(self) -> int: ...
 
-        def astype(self, dtype: DTypeLike) -> number[*Shape]: ...
+        def astype(self, dtype: DTypeLike) -> Numeric[number, *Shape]: ...
 
-        def view(self, dtype: DTypeLike) -> number[*Shape]: ...
+        def view(self, dtype: DTypeLike) -> Numeric[number, *Shape]: ...
 
         def copy(self) -> Self: ...
 
@@ -204,56 +204,64 @@ if TYPE_CHECKING:
 
     class i16x2(Packed): ...
 
+    type Vector[T: Numeric] = Numeric[T, int]
+    type Matrix[T: Numeric] = Numeric[T, int, int]
+
+    class Scalar[T](Numeric[T]):
+        def __new__(cls, value: SupportsInt = 0) -> Self: ...
+
     # A type called converts to its scalar, which an array's elements are as well.
-    class u8[*Shape = *tuple[()]](Numeric["u8", *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> u8: ...
+    class u8(Scalar["u8"]): ...
 
-    class u16[*Shape = *tuple[()]](Numeric["u16", *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> u16: ...
+    class u16(Scalar["u16"]): ...
 
-    class u32[*Shape = *tuple[()]](Numeric["u32", *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> u32: ...
+    class u32(Scalar["u32"]): ...
 
-    class u64[*Shape = *tuple[()]](Numeric["u64", *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> u64: ...
+    class u64(Scalar["u64"]): ...
 
-    class i16[*Shape = *tuple[()]](Numeric["i16", *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> i16: ...
+    class i16(Scalar["i16"]): ...
 
-    class i32[*Shape = *tuple[()]](Numeric["i32", *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> i32: ...
+    class i32(Scalar["i32"]): ...
 
-    class i64[*Shape = *tuple[()]](Numeric["i64", *Shape]):
-        def __new__(cls, value: SupportsInt = 0) -> i64: ...
+    class i64(Scalar["i64"]): ...
 
-    class unsigned[*Shape](Numeric["unsigned", *Shape]): ...
+    class unsigned(Numeric["unsigned"]): ...
 
-    class number[*Shape](Numeric["number", *Shape]): ...
+    class number(Numeric["number"]): ...
 
 else:
 
+    def _array(name: str, ndim: int) -> type:
+        def __class_getitem__(cls, element):
+            if not (isinstance(element, type) and issubclass(element, np.number)):
+                raise TypeError(f"{name}[{element!r}]: an array holds a numeric type")
+            return ArrayOf(canonical(element), ndim)
+
+        return type(name, (), {"__class_getitem__": __class_getitem__, "__module__": __name__})
+
+    Vector, Matrix = _array("Vector", 1), _array("Matrix", 2)
+
     def _numeric(name: str, base: type[np.number]) -> type:
-        """`base` as a numeric type: called, its scalar; subscripted by a shape, an array of it.
+        """`base` as a numeric type: called, its scalar; subscripted, refused as no array.
 
         A subclass, so numba types a cast through it as one of `base`.
         """
 
-        def __new__(cls, value=0):
-            return base(value)
-
         def __class_getitem__(cls, shape):
-            dimensions = shape if isinstance(shape, tuple) else (shape,)
-            if not dimensions or any(dimension is not int for dimension in dimensions):
-                raise TypeError(f"{name}[{shape!r}]: an array names each dimension `int`")
-            return ArrayOf(base, len(dimensions))
+            array = "Matrix" if shape == (int, int) else "Vector"
+            raise TypeError(f"{name}[...] declares no array; write {array}[{name}]")
 
-        members = {"__slots__": (), "__new__": __new__, "__module__": __name__}
-        return type(name, (base,), members | {"__class_getitem__": __class_getitem__})
+        members = {
+            "__slots__": (),
+            "__new__": lambda cls, value=0: base(value),
+            "__class_getitem__": __class_getitem__,
+            "__module__": __name__,
+        }
+        return type(name, (base,), members)
 
     u8, u16, u32, u64 = (_numeric(f"u{n}", getattr(np, f"uint{n}")) for n in (8, 16, 32, 64))
     i16, i32, i64 = (_numeric(f"i{n}", getattr(np, f"int{n}")) for n in (16, 32, 64))
-    unsigned = _numeric("unsigned", np.unsignedinteger)
-    number = _numeric("number", np.number)
+    unsigned, number = _numeric("unsigned", np.unsignedinteger), _numeric("number", np.number)
     u8x4, i8x4, u16x2, i16x2 = (
         Lanes(name=name, element=element)
         for name, element in [

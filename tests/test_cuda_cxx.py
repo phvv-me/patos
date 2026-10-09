@@ -11,7 +11,17 @@ import numpy as np
 import pytest
 
 from patos.cuda.primitives import warp
-from patos.cuda.typed import Compiler, Cxx, Headers, Kernel, cccl, i32, kernel, thread_index
+from patos.cuda.typed import (
+    Compiler,
+    Cxx,
+    Headers,
+    Kernel,
+    Vector,
+    cccl,
+    i32,
+    kernel,
+    thread_index,
+)
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
@@ -38,7 +48,7 @@ def unit(
         raise NotImplementedError
 
     @kernel(threads=128)
-    def sums(values: i32[int], out: i32[int]) -> None:
+    def sums(values: Vector[i32], out: Vector[i32]) -> None:
         index = thread_index()
         total = warp_total(values[index])
         if index % 32 == 0:
@@ -53,7 +63,7 @@ def compiled_by(compiler: Compiler, defines: list[str]) -> Headers:
 
 
 @kernel(threads=128)
-def patos_sums(values: i32[int], out: i32[int]) -> None:
+def patos_sums(values: Vector[i32], out: Vector[i32]) -> None:
     index = thread_index()
     total = warp.sum(values[index])
     if index % 32 == 0:

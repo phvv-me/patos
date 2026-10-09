@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ..hashing import EMPTY_KEY, GOLDEN_GAMMA, MIX_ONE, MIX_TWO, build_pair_slots, splitmix
-from ..typed import Struct, device, i64, u64
+from ..typed import Struct, Vector, device, i64, u64
 from .memory import address, load_pair
 
 # Bits in a filter. Sixty four thousand against a few hundred members keeps a stray hit under
@@ -41,7 +41,7 @@ class PairTable(Struct):
     mask: the capacity less one.
     """
 
-    slots: u64[int]
+    slots: Vector[u64]
     mask: u64
 
     @classmethod
@@ -66,7 +66,7 @@ class PairTable(Struct):
 class Bitmap(Struct):
     """A flag per bit packed sixty-four to a word, asked `bit in bitmap`; no bit lies past it."""
 
-    words: u64[int]
+    words: Vector[u64]
 
     @device
     def __contains__(self, bit: u64) -> bool:

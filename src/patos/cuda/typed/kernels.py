@@ -8,7 +8,7 @@ a method of the record, launched as `record.kernel[items](*arguments)`.
 A launch converts every scalar to the type its parameter declares and hands cuda.core the
 arguments marshalled by hand, on the current CuPy stream. Arrays are contiguous and scalars arrive
 at their declared types, so a kernel compiles once, or once per dtype an open element
-(`unsigned[int]`) meets; an array of another element, dimension count or layout is refused.
+(`Vector[unsigned]`) meets; an array of another element, dimension count or layout is refused.
 """
 
 from collections.abc import Callable

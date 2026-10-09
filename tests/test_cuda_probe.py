@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from patos.cuda.primitives import EMPTY_KEY, PairTable, device_splitmix
-from patos.cuda.typed import device, i64, items, kernel, u64
+from patos.cuda.typed import Matrix, Vector, device, i64, items, kernel, u64
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
@@ -21,7 +21,7 @@ class Probes(NamedTuple):
 
 
 @device
-def probed(mask: u64, slots: u64[int], key: u64) -> u64:
+def probed(mask: u64, slots: Vector[u64], key: u64) -> u64:
     """`PairTable.get` as it was, two loads a probe, answering the empty key for none."""
     slot = device_splitmix(key) & mask
     while slots[slot * 2] != EMPTY_KEY:
@@ -32,7 +32,7 @@ def probed(mask: u64, slots: u64[int], key: u64) -> u64:
 
 
 @kernel
-def getting(table: PairTable, keys: u64[int], found: i64[int, int]) -> None:
+def getting(table: PairTable, keys: Vector[u64], found: Matrix[i64]) -> None:
     for item in items(keys.size):
         found[item, 0] = table.get(keys[item])
         found[item, 1] = probed(table.mask, table.slots, keys[item])

@@ -1,8 +1,8 @@
 """What an annotation declares, read through `type` aliases at every level.
 
-A declaration is a scalar type, `bool`, packed lanes (`u8x4`), an array (`u8[int]`), a record (a
-`Struct`), a named value (a `typing.NamedTuple` of declarations), or a tuple of these. The readings
-of a function also know an int literal, which takes the type of the integer it meets.
+A declaration is a scalar type, `bool`, packed lanes (`u8x4`), an array (`Vector[u8]`), a record
+(a `Struct`), a named value (a `typing.NamedTuple` of declarations), or a tuple of these. The
+readings of a function also know an int literal, which takes the type of the integer it meets.
 """
 
 import annotationlib
@@ -138,7 +138,7 @@ def named(kind: Returns) -> str:
         case Lanes():
             return kind.name
         case ArrayOf():
-            return f"{named(kind.element)}[{', '.join(['int'] * kind.ndim)}]"
+            return f"{('Vector', 'Matrix')[kind.ndim - 1]}[{named(kind.element)}]"
         case tuple():
             return f"tuple[{', '.join(named(element) for element in kind)}]"
         case type():

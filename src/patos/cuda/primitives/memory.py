@@ -12,7 +12,7 @@ from numba import types
 from numba.cuda import cgutils
 from numba.cuda.extending import intrinsic
 
-from ..typed import device, ptx, u8, u32, u64
+from ..typed import Vector, device, ptx, u8, u32, u64
 from . import bits
 
 
@@ -55,7 +55,7 @@ def load_pair(at: u64) -> tuple[u64, u64]:
 
 
 @device
-def _tail(chars: u8[int], at: u64) -> tuple[u64, u64]:
+def _tail(chars: Vector[u8], at: u64) -> tuple[u64, u64]:
     """`window` one byte at a time."""
     low = u64(0)
     high = u64(0)
@@ -68,7 +68,7 @@ def _tail(chars: u8[int], at: u64) -> tuple[u64, u64]:
 
 
 @device
-def window(chars: u8[int], at: u64) -> tuple[u64, u64]:
+def window(chars: Vector[u8], at: u64) -> tuple[u64, u64]:
     """The 16 bytes of `chars` from byte `at` as two little-endian words, zero past the end.
 
     at: a byte offset inside `chars`.
