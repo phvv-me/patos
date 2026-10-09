@@ -9,17 +9,17 @@ from typing import TYPE_CHECKING, ClassVar, Self
 import cupy as cp
 import numpy as np
 
+from ..scalars import ArrayOf, ConstantOf, Lanes, converted
 from .arguments import Argument, argument, record_argument
 from .declarations import Declared, NamedValue, Record, declared, is_scalar, named
-from .decorators import Method
+from .decorators import bind_members
 from .kernels import Kernel
-from .scalars import ArrayOf, ConstantOf, converted
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from ..runtime.memory import Workspace
-    from .scalars import Shaped
+    from ..scalars import Shaped
 
 # What a record holds: a scalar, a host or device array, or another record.
 type Value = bool | int | float | np.generic | np.ndarray | Shaped | Struct
@@ -55,10 +55,9 @@ class Struct:
         cls.__record_fields__ = tuple(own)
         cls.__record_defaults__ = {name: namespace[name] for name in own if name in namespace}
         cls.__match_args__ = cls.__record_fields__
+        bind_members(cls)
         for name, member in list(namespace.items()):
-            if isinstance(member, property) and isinstance(member.fget, Method):
-                member.fget.bind(cls, name, attribute=True)
-            elif isinstance(member, Method) or (isinstance(member, Kernel) and member.member):
+            if isinstance(member, Kernel) and member.member:
                 member.bind(cls, name)
 
     def __init__(self, *values: Value, **named: Value) -> None:
@@ -98,8 +97,11 @@ class Struct:
         """What each field declares, read once per record class."""
         annotations = annotationlib.get_annotations(cls)
         fields = {name: declared(annotations[name]) for name in cls.__record_fields__}
-        if held := [name for name, kind in fields.items() if isinstance(kind, NamedValue)]:
-            raise TypeError(f"{cls.__name__}.{', '.join(held)} is a named value, not a field")
+        if held := [name for name, kind in fields.items() if isinstance(kind, NamedValue | Lanes)]:
+            raise TypeError(
+                f"{cls.__name__}.{', '.join(held)} is a named value or lanes, which no launch "
+                "passes, not a field"
+            )
         return fields
 
     @classmethod

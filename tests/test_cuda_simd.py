@@ -1,17 +1,60 @@
-"""The bit operations and aligned loads of `patos.cuda.primitives` and the stubs under them."""
+"""The bit operations, the SIMD operations on packed lanes and the aligned loads of
+`patos.cuda.primitives`, and the stubs under them."""
 
-from typing import NamedTuple
+import re
+from collections import Counter
+from collections.abc import Callable, Sequence
+from functools import cache
+from typing import TYPE_CHECKING, NamedTuple
 
 import cupy as cp
 import numpy as np
 import pytest
 
 from patos.cuda.primitives import bits, memory
-from patos.cuda.typed import AnnotationError, Kernel, items, kernel, ptx, u8, u32, u64
+from patos.cuda.typed import (
+    AnnotationError,
+    Kernel,
+    cuda,
+    device,
+    dispatched,
+    i8x4,
+    i16x2,
+    i32,
+    items,
+    kernel,
+    ptx,
+    u8,
+    u8x4,
+    u16x2,
+    u32,
+    u64,
+    unsigned,
+)
+
+if TYPE_CHECKING:
+    from patos.cuda.scalars import Packed
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
 _COUNT = 4096
+# Words whose lanes sit at the edges of every lane type.
+_EDGES = [0, 0xFFFFFFFF, 0x80808080, 0x7F7F7F7F, 0x80008000, 0x7FFF7FFF, 0x00FF00FF, 0x01017F80]
+# What a lane operation reads a word as: lanes, or a 32-bit integer.
+type Operand = type[Packed] | type[u32] | type[i32]
+# Each operation over what it reads its first two words as, and the SASS instructions it adds to
+# a kernel from sm_86 to sm_90 and on sm_121, where the video instructions are emulated.
+_SASS: dict[tuple[str, tuple[Operand, Operand]], tuple[int, int]] = {
+    ("absdiff", (u8x4, u8x4)): (1, 3), ("absdiff", (i8x4, i8x4)): (3, 5),
+    ("absdiff", (u16x2, u16x2)): (7, 11), ("absdiff", (i16x2, i16x2)): (7, 11),
+    ("absdiff", (u32, u32)): (1, 3), ("absdiff", (i32, i32)): (1, 3),
+    ("sad", (u8x4, u8x4)): (1, 6), ("sad", (i8x4, i8x4)): (3, 8),
+    ("sad", (u32, u32)): (1, 3), ("sad", (i32, i32)): (1, 3),
+    ("dot", (u8x4, u8x4)): (1, 1), ("dot", (i8x4, i8x4)): (1, 1),
+    ("dot", (u16x2, u8x4)): (1, 1), ("dot", (i16x2, i8x4)): (1, 1),
+    ("min", (u8x4, u8x4)): (6, 7), ("max", (u8x4, u8x4)): (6, 7),
+}  # fmt: skip
+_SUMMING = {"sad", "dot"}
 
 
 @ptx("add.u32 $result0, $value, $value;\nmov.u64 $result1, $wide;", pure=True)
@@ -36,13 +79,45 @@ def effects(narrow: u32[int], wide: u64[int], held: u64[int, int], stored: u32[i
 
 @kernel
 def mixing(table: u32[int, int]) -> None:
-    """Columns 0 to 2 are the operands, and 3 to 6 get `permute`, `funnel`, `dot4`, `absdiff4`."""
+    """Columns 0 to 2 are the operands, and 3 and 4 get `permute` and `funnel`."""
     for item in items(table.shape[0]):
         first, second, third = table[item, 0], table[item, 1], table[item, 2]
         table[item, 3] = bits.permute(first, second, third)
         table[item, 4] = bits.funnel(first, second, third)
-        table[item, 5] = bits.dot4(first, second, third)
-        table[item, 6] = bits.absdiff4(first, second)
+
+
+@device
+def _exclusive(a: u32, b: u32) -> u32:
+    """One instruction over the two words a lane operation reads, for the kernel around it."""
+    return a ^ b
+
+
+@device
+def _exclusive_summed(a: u32, b: u32, c: u32) -> u32:
+    """One instruction over the three words a summing lane operation reads."""
+    return a ^ b ^ c
+
+
+@cache
+def applying(operation: Callable, lanes: Sequence[Operand], *, summed: bool) -> Kernel:
+    """A kernel giving `out[i]` the `operation` of `words[0, i]` and `words[1, i]`.
+
+    lanes: what the two words are read as.
+    summed: whether the operation adds a third word, `words[2, i]`.
+    """
+    left, right = lanes
+
+    @kernel
+    def apply(words: unsigned[int, int], out: unsigned[int]) -> None:
+        for item in items(out.size):
+            out[item] = operation(left(words[0, item]), right(words[1, item]))
+
+    @kernel
+    def accumulate(words: unsigned[int, int], out: unsigned[int]) -> None:
+        for item in items(out.size):
+            out[item] = operation(left(words[0, item]), right(words[1, item]), words[2, item])
+
+    return accumulate if summed else apply
 
 
 @kernel
@@ -92,8 +167,45 @@ def _permuted(table: np.ndarray) -> np.ndarray:
     return filled.astype(np.uint8).view(np.uint32).ravel()
 
 
+def _sass(launched: Kernel) -> Counter[str]:
+    """How many times each SASS instruction appears in what `launched` compiled to."""
+    sass = launched.dispatcher.inspect_sass(next(iter(launched.dispatcher.overloads)))
+    found = re.finditer(r"/\*[0-9a-f]{4}\*/\s+(?:@!?U?P\w+\s+)?([A-Z][\w.]*)", sass)
+    return Counter(match[1] for match in found if match[1] != "NOP")
+
+
+def _computed(name: str, lanes: Sequence[Operand], words: np.ndarray) -> np.ndarray:
+    """What the host computes for lane operation `name` over the three rows of uint32 `words`.
+
+    Each word reads as a row of int64 lanes, a 32-bit integer as a row of one.
+    """
+    first, second = (
+        row.view(getattr(kind, "element", kind)).reshape(len(row), -1).astype(np.int64)
+        for row, kind in zip(words, lanes, strict=False)
+    )
+    match name:
+        case "sad":
+            return (words[2] + np.abs(first - second).sum(axis=1)) % 2**32
+        case "dot":
+            return (words[2] + (first * second[:, : first.shape[1]]).sum(axis=1)) % 2**32
+        case "absdiff":
+            values = np.abs(first - second)
+        case _:
+            values = {"min": np.minimum, "max": np.maximum}[name](first, second)
+    width = 32 // first.shape[1]
+    shifts = np.arange(first.shape[1], dtype=np.uint64) * np.uint64(width)
+    return ((values % 2**width).astype(np.uint64) << shifts).sum(axis=1)
+
+
+def _spelled(value: str | tuple[Operand, Operand]) -> str:
+    """A test's id: the operation's name, or how it reads its words."""
+    if isinstance(value, str):
+        return value
+    return "-".join(getattr(kind, "name", None) or kind.__name__ for kind in value)
+
+
 class Mixed(NamedTuple):
-    """What `mixing` made of random operands: a uint32 table with shape `[n, 7]`."""
+    """What `mixing` made of random operands: a uint32 table with shape `[n, 5]`."""
 
     table: np.ndarray
 
@@ -101,7 +213,7 @@ class Mixed(NamedTuple):
 @pytest.fixture
 def mixed() -> Mixed:
     operands = np.random.default_rng(7).integers(0, 2**32, (_COUNT, 3))
-    table = cp.zeros((_COUNT, 7), np.uint32)
+    table = cp.zeros((_COUNT, 5), np.uint32)
     table[:, :3] = cp.asarray(operands, np.uint32)
     mixing[_COUNT](table)
     return Mixed(table.get())
@@ -114,19 +226,58 @@ def test_permute_and_funnel_give_the_bytes_and_bits_the_host_picks(mixed: Mixed)
     assert table[:, 4].tolist() == ((both >> (table[:, 2] & 31)) & 0xFFFFFFFF).tolist()
 
 
-def test_dot4_and_absdiff4_combine_the_bytes_of_two_words(mixed: Mixed) -> None:
-    table = mixed.table
-    left, right = (_bytes_of(table[:, column]).astype(np.int64) for column in (0, 1))
-    wanted = np.abs(left - right).astype(np.uint8).view(np.uint32).ravel()
-    assert table[:, 5].tolist() == (((left * right).sum(axis=1) + table[:, 2]) % 2**32).tolist()
-    assert table[:, 6].tolist() == wanted.tolist()
-
-
-@pytest.mark.parametrize(
-    "instruction", ["prmt.b32", "shf.r.wrap.b32", "dp4a.u32.u32", "vabsdiff4.u32.u32.u32"]
-)
+@pytest.mark.parametrize("instruction", ["prmt.b32", "shf.r.wrap.b32"])
 def test_a_bit_operation_is_its_one_ptx_instruction(mixed: Mixed, instruction: str) -> None:
     assert _ptx_of(mixing).count(instruction) == 1
+
+
+@pytest.mark.parametrize(("name", "lanes"), _SASS, ids=_spelled)
+def test_a_lane_operation_gives_what_the_host_computes_lane_by_lane(
+    *, name: str, lanes: tuple[Operand, Operand]
+) -> None:
+    """Random words and every pair of words at the lane types' edges, added to 0xFFFFFFF0."""
+    pairs = np.array([*np.meshgrid(_EDGES, _EDGES), np.full((8, 8), 0xFFFFFFF0)], np.uint32)
+    random = np.random.default_rng(len(name)).integers(0, 2**32, (3, _COUNT), dtype=np.uint32)
+    words = np.concatenate([pairs.reshape(3, -1), random], axis=1)
+    out = cp.zeros(words.shape[1], np.uint32)
+    applying(getattr(bits, name), lanes, summed=name in _SUMMING)[len(out)](cp.asarray(words), out)
+
+    assert out.get().tolist() == _computed(name, lanes, words).tolist()
+
+
+@pytest.mark.parametrize(("name", "lanes"), _SASS, ids=_spelled)
+def test_a_lane_operation_compiles_to_the_instructions_measured_for_its_lanes(
+    *, name: str, lanes: tuple[Operand, Operand]
+) -> None:
+    """What the operation adds to a kernel over one exclusive or of the same words."""
+    capability = cuda.get_current_device().compute_capability
+    if capability not in {(8, 6), (8, 9), (9, 0), (12, 1)}:
+        pytest.skip(f"no SASS was measured on sm_{capability[0]}{capability[1]}")
+    summed = name in _SUMMING
+    launched = [
+        applying(getattr(bits, name), lanes, summed=summed),
+        applying(_exclusive_summed if summed else _exclusive, (i32, i32), summed=summed),
+    ]
+    words, out = cp.zeros((3, 128), np.uint32), cp.zeros(128, np.uint32)
+    for compiled in launched:
+        compiled[128](words, out)
+    found, base = (_sass(compiled) for compiled in launched)
+
+    assert found.total() - base.total() + 1 == _SASS[name, lanes][capability == (12, 1)]
+
+
+def test_a_dispatched_name_takes_only_implementations_of_its_own_operands() -> None:
+    """An implementation of another arity is refused at definition, not at a call."""
+
+    @ptx("add.u32 $result, $a, $b;", pure=True)
+    def added(a: u32, b: u32) -> u32:
+        raise NotImplementedError
+
+    def alone(a: u32) -> u32:
+        raise NotImplementedError
+
+    with pytest.raises(TypeError, match=r"alone: an implementation takes other operands"):
+        dispatched(added)(alone)
 
 
 def test_a_stub_returns_a_tuple_of_registers_or_nothing() -> None:

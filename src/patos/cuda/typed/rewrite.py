@@ -21,10 +21,11 @@ from typing import Protocol
 
 import numpy as np
 
-from .declarations import Returns, Signature, is_scalar
+from .. import scalars
+from ..scalars import Lanes, i32, i64
+from .declarations import Returns, Signature
 from .items import items_through
-from .reading import Reading
-from .scalars import i32, i64
+from .reading import Reading, is_convertible
 
 
 class Helper(Protocol):
@@ -74,7 +75,7 @@ class Rewrite:
         original = self.reading.function
         # The module's own globals, updated in place, so a name the module defines later resolves.
         namespace = self.reading.namespace
-        namespace.update(_patos_numpy=np)
+        namespace.update(_patos_numpy=np, _patos_scalars=scalars)
         if self.items is not None:
             namespace.update(self.items.bindings())
         rebuilt = FunctionType(self._code(), namespace, original.__name__)
@@ -143,7 +144,7 @@ class _Conversions(ast.NodeTransformer):
         if (built := self.reading.constructed(node)) is not None:
             fields = self.reading.fields(node, built)
             node.args = [
-                _converted(kind, value) if is_scalar(kind) else value
+                _converted(kind, value) if is_convertible(kind) else value
                 for kind, value in zip(built.kinds(), fields, strict=True)
             ]
             node.keywords = []
@@ -166,7 +167,7 @@ class _Conversions(ast.NodeTransformer):
 
     def _returned(self, declared: Returns, value: ast.expr) -> ast.expr:
         """`value` converted to what the return declares, through nested tuple displays."""
-        if is_scalar(declared):
+        if is_convertible(declared):
             return _converted(declared, value)
         if isinstance(declared, tuple) and isinstance(value, ast.Tuple):
             value.elts = [
@@ -289,7 +290,7 @@ def _name(identifier: str, context: ast.expr_context | None = None) -> ast.Name:
     return ast.Name(id=identifier, ctx=context or ast.Load())
 
 
-def _converted(kind: type[np.generic], value: ast.expr) -> ast.expr:
+def _converted(kind: type[np.generic] | Lanes, value: ast.expr) -> ast.expr:
     """`kind(value)`, pushed into both branches of a conditional expression."""
     if isinstance(value, ast.IfExp):
         return ast.IfExp(
@@ -297,11 +298,14 @@ def _converted(kind: type[np.generic], value: ast.expr) -> ast.expr:
             body=_converted(kind, value.body),
             orelse=_converted(kind, value.orelse),
         )
-    return ast.Call(func=_numpy(kind), args=[value])
+    return ast.Call(func=_converter(kind), args=[value])
 
 
-def _numpy(kind: type[np.generic]) -> ast.Attribute:
-    """The expression naming scalar type `kind` in a rewritten function."""
-    return ast.Attribute(
-        value=ast.Name(id="_patos_numpy", ctx=ast.Load()), attr=kind.__name__, ctx=ast.Load()
+def _converter(kind: type[np.generic] | Lanes) -> ast.Attribute:
+    """The expression naming scalar type or lanes `kind` in a rewritten function."""
+    module, name = (
+        ("_patos_scalars", kind.name)
+        if isinstance(kind, Lanes)
+        else ("_patos_numpy", kind.__name__)
     )
+    return ast.Attribute(value=_name(module), attr=name, ctx=ast.Load())

@@ -11,6 +11,7 @@ from typing import TypeIs, TypeVar
 
 import numpy as np
 
+from ..scalars import ArrayOf, Lanes, canonical
 from .declarations import (
     Declared,
     Evaluated,
@@ -18,13 +19,13 @@ from .declarations import (
     Record,
     Returns,
     Signature,
+    Subject,
     declared,
     is_scalar,
     named,
     unaliased,
 )
 from .items import items, items_through
-from .scalars import ArrayOf, canonical
 
 
 class AnnotationError(TypeError):
@@ -76,23 +77,25 @@ class Reading:
         """Whether `node` calls one of `functions`, through any name it was imported under."""
         return isinstance(node, ast.Call) and resolved(node.func, self.namespace) in functions
 
-    def cast(self, node: ast.expr) -> type[np.generic] | None:
-        """The scalar type `node` converts to when it is a cast `T(value)`."""
-        if isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords:
-            target = resolved(node.func, self.namespace)
-            return canonical(target) if is_scalar(target) else None
-        return None
+    def cast(self, node: ast.expr) -> type[np.generic] | Lanes | None:
+        """The scalar type or lanes `node` converts to when it is a cast `T(value)`."""
+        if not (isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords):
+            return None
+        target = resolved(node.func, self.namespace)
+        if is_scalar(target):
+            return canonical(target)
+        return target if isinstance(target, Lanes) else None
 
     def constructed(self, node: ast.Call) -> NamedValue | None:
         """The named value `node` builds when it calls the class that declares it."""
         kind = declared(resolved(node.func, self.namespace))
         return kind if isinstance(kind, NamedValue) else None
 
-    def declared_scalar(self, target: ast.expr) -> type[np.generic] | None:
-        """The scalar type `target` is declared, which every assignment to it converts to."""
+    def declared_scalar(self, target: ast.expr) -> type[np.generic] | Lanes | None:
+        """The scalar type or lanes `target` is declared, which each assignment converts to."""
         if isinstance(target, ast.Name):
             kind = self.declared.get(target.id)
-            return kind if is_scalar(kind) else None
+            return kind if is_convertible(kind) else None
         return None
 
     def fields(self, node: ast.Call, built: NamedValue) -> list[ast.expr]:
@@ -185,7 +188,7 @@ class Reading:
 
     def _check_loop(self, node: ast.For, declarations: Mapping[str, Declared]) -> None:
         for target in ast.walk(node.target):
-            if isinstance(target, ast.Name) and is_scalar(declarations.get(target.id)):
+            if isinstance(target, ast.Name) and is_convertible(declarations.get(target.id)):
                 self.issue(node, f"loop variable `{target.id}` is declared; the iterable types it")
 
     def _declarations(self) -> dict[str, Declared]:
@@ -228,6 +231,8 @@ class Reading:
         kind = self._annotation(argument.annotation)
         if self.kernel and isinstance(kind, NamedValue):
             self.issue(argument, f"a launch passes no {named(kind)}; a record carries its fields")
+        if self.kernel and isinstance(kind, Lanes):
+            self.issue(argument, f"a launch passes no {named(kind)}; pass a u32 and convert it")
         return kind
 
     def _returns(self, *, kernel: bool) -> Returns:
@@ -243,6 +248,11 @@ class Reading:
         if _has_array(kind):
             self.issue(node, "a device function returns no array")
         return kind
+
+
+def is_convertible(kind: Subject) -> TypeIs[type[np.number] | Lanes]:
+    """Whether a value converts to `kind` by a cast: a scalar type or packed lanes."""
+    return is_scalar(kind) or isinstance(kind, Lanes)
 
 
 def resolved(node: ast.expr, namespace: dict[str, Evaluated]) -> Evaluated:

@@ -8,6 +8,7 @@ from functools import partial
 
 import numpy as np
 
+from ..scalars import ArrayOf
 from .arithmetic import combined, operated
 from .declarations import (
     Declared,
@@ -20,7 +21,6 @@ from .declarations import (
     is_scalar,
 )
 from .reading import Reading, resolved
-from .scalars import ArrayOf
 
 # One way a local gets its value: a reading of what is assigned, given the other locals.
 type _Origin = Callable[[dict[str, Declared]], Declared]

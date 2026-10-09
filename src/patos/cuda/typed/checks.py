@@ -7,12 +7,12 @@ from collections.abc import Callable, Iterator, Sequence
 from functools import partial
 from types import FunctionType, NoneType
 
+from ..scalars import ArrayOf
 from .arithmetic import combined, operated
-from .declarations import Declared, Kind, NamedValue, Returns, is_scalar, named
+from .declarations import Declared, Kind, NamedValue, Returns, named
 from .inference import Inference
 from .items import items, items_through
-from .reading import Reading
-from .scalars import ArrayOf
+from .reading import Reading, is_convertible
 
 
 def read(function: FunctionType, *, kernel: bool, owner: type | None = None) -> Reading:
@@ -57,7 +57,7 @@ class Checker:
             return
         for argument, parameter in zip(call.args, callee.parameters, strict=False):
             self._converted_by(
-                parameter if is_scalar(parameter) else None,
+                parameter if is_convertible(parameter) else None,
                 f"`{ast.unparse(call.func)}`'s parameter",
                 argument,
             )
@@ -87,7 +87,7 @@ class Checker:
             case ast.Return(value=ast.Tuple(elts=elements)) if isinstance(returns, tuple):
                 for kind, element in zip(returns, elements, strict=False):
                     self._converted_by(kind, "the return annotation", element)
-            case ast.Return(value=value) if value is not None and is_scalar(returns):
+            case ast.Return(value=value) if value is not None and is_convertible(returns):
                 self._converted_by(returns, "the return annotation", value)
             case ast.BinOp(left=left, op=op, right=right):
                 self._operand(left, right, partial(operated, op))

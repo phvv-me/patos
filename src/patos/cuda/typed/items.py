@@ -3,10 +3,10 @@
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from .scalars import i64
+from ..scalars import i64
 
 if TYPE_CHECKING:
-    from .scalars import Operand
+    from ..scalars import Operand
 
 
 def items(count: Operand) -> Iterator[i64]:

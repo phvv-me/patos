@@ -17,10 +17,12 @@ from typing import cast
 
 from llvmlite import ir
 from numba import types
+from numba.core.errors import TypingError
 from numba.core.typing import templates
 from numba.cuda.extending import intrinsic
 
 from .declarations import Signature, declared, numba_type
+from .lanes import LaneType
 from .reading import AnnotationError
 
 # The inline-assembly constraint of the register a PTX operand of each type lives in.
@@ -39,7 +41,7 @@ def ptx[F: FunctionType](template: str, *, pure: bool = False) -> Callable[[F], 
     """
 
     def defined(stub: F) -> F:
-        signature, typed = _declared_signature(stub)
+        signature, typed = read_stub(stub)
         outputs = _outputs(typed.return_type)
         constraints = _constraints(stub, outputs, typed)
         text = Template(template).substitute(_operands(stub, len(outputs)))
@@ -54,12 +56,12 @@ def ptx[F: FunctionType](template: str, *, pure: bool = False) -> Callable[[F], 
                 return context.make_tuple(builder, call.return_type, parts)
             return value if outputs else context.get_dummy_value()
 
-        return _intrinsic(stub, signature, typed, lowered)
+        return as_intrinsic(stub, signature, typed, lowered)
 
     return defined
 
 
-def _declared_signature(stub: FunctionType) -> tuple[Signature, templates.Signature]:
+def read_stub(stub: FunctionType) -> tuple[Signature, templates.Signature]:
     """Read what the stub declares and the Numba signature that types a call of it.
 
     Every parameter is a scalar and the return a scalar, a tuple of them or None.
@@ -87,10 +89,19 @@ def _constraints(
     stub: FunctionType, outputs: Sequence[types.Type], typed: templates.Signature
 ) -> str:
     """The inline-assembly constraints of the operands, the written registers first."""
-    if any(kind not in _REGISTERS for kind in (*outputs, *typed.args)):
-        raise AnnotationError(f"{stub.__qualname__}: a PTX operand is 16, 32 or 64 bits wide")
-    written = [f"={_REGISTERS[kind]}" for kind in outputs]
-    return ",".join(written + [_REGISTERS[kind] for kind in typed.args])
+    try:
+        return ",".join(
+            [f"={_register(kind)}" for kind in outputs] + list(map(_register, typed.args))
+        )
+    except KeyError:
+        raise AnnotationError(
+            f"{stub.__qualname__}: a PTX operand is 16, 32 or 64 bits wide"
+        ) from None
+
+
+def _register(kind: types.Type) -> str:
+    """The constraint of the register an operand of `kind` lives in; lanes fill a 32-bit one."""
+    return "r" if isinstance(kind, LaneType) else _REGISTERS[kind]
 
 
 def _operands(stub: FunctionType, written: int) -> dict[str, str]:
@@ -123,24 +134,56 @@ def _function_type(
     return ir.FunctionType(returns, [context.get_value_type(kind) for kind in call.args])
 
 
-def _intrinsic[F: FunctionType](
+def as_intrinsic[F: FunctionType](
     stub: F, signature: Signature, typed: templates.Signature, lowered: Callable[..., ir.Value]
 ) -> F:
     """A Numba intrinsic typed by the stub's signature, carrying it for the callers' checks."""
 
+    @_named_like(stub)
     def typing(_context, *_arguments: types.Type) -> tuple:
         return typed, lowered
 
-    # Numba folds a call's arguments by this signature: the typing context, then the stub's own.
-    context = inspect.Parameter("context", inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    typing.__dict__["__signature__"] = inspect.Signature(
-        [context, *inspect.signature(stub).parameters.values()]
-    )
-    typing.__name__, typing.__qualname__, typing.__doc__ = (
-        stub.__name__,
-        stub.__qualname__,
-        stub.__doc__,
-    )
     function = intrinsic(typing)
     function.__dict__["device_signature"] = signature
     return cast("F", function)
+
+
+def as_dispatching[F: FunctionType](
+    stub: F, resolve: Callable[..., tuple[templates.Signature, Callable[..., ir.Value]]]
+) -> F:
+    """A Numba intrinsic that types and lowers a call as `resolve` decides for its operands.
+
+    A call names its operands as the stub does, by position or by keyword.
+    """
+    parameters = inspect.signature(stub)
+
+    @_named_like(stub)
+    def typing(context, *operands: types.Type, **keywords: types.Type) -> tuple:
+        try:
+            bound = parameters.bind(*operands, **keywords)
+        except TypeError as error:
+            raise TypingError(f"{stub.__qualname__}: {error}") from None
+        return resolve(context, bound.args)
+
+    return cast("F", intrinsic(typing))
+
+
+def _named_like(stub: FunctionType) -> Callable[[FunctionType], FunctionType]:
+    """A decorator naming and documenting a typing function as the stub, taking its parameters.
+
+    Numba folds a call's arguments by the signature the typing function carries, after the
+    typing context.
+    """
+    context = inspect.Parameter("context", inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    parameters = [context, *inspect.signature(stub).parameters.values()]
+
+    def named(typing: FunctionType) -> FunctionType:
+        typing.__dict__["__signature__"] = inspect.Signature(parameters)
+        typing.__name__, typing.__qualname__, typing.__doc__ = (
+            stub.__name__,
+            stub.__qualname__,
+            stub.__doc__,
+        )
+        return typing
+
+    return named

@@ -1,8 +1,8 @@
 """What an annotation declares, read through `type` aliases at every level.
 
-A declaration is a scalar type, `bool`, an array (`u8[int]`), a record (a `Struct`), a named value
-(a `typing.NamedTuple` of declarations), or a tuple of these. The readings of a function also know
-an int literal, which takes the type of the integer it meets.
+A declaration is a scalar type, `bool`, packed lanes (`u8x4`), an array (`u8[int]`), a record (a
+`Struct`), a named value (a `typing.NamedTuple` of declarations), or a tuple of these. The readings
+of a function also know an int literal, which takes the type of the integer it meets.
 """
 
 import annotationlib
@@ -23,7 +23,8 @@ from typing import (
 import numpy as np
 from numba import types
 
-from .scalars import SPELLINGS, ArrayOf, ConstantOf, canonical
+from ..scalars import SPELLINGS, ArrayOf, ConstantOf, Lanes, canonical
+from .lanes import lane_type
 
 
 @final
@@ -88,6 +89,7 @@ type Evaluated = (
     | GenericAlias
     | ArrayOf
     | ConstantOf
+    | Lanes
     | annotationlib.ForwardRef
     | ModuleType
     | Callable
@@ -95,8 +97,8 @@ type Evaluated = (
     | np.generic
     | None
 )
-# What a reading knows of a value: its scalar type, `bool`, a literal, or None for unknown.
-type Kind = type[np.generic] | type[bool] | IntLiteral | None
+# What a reading knows of a value: its scalar type, `bool`, lanes, a literal, or None for unknown.
+type Kind = type[np.generic] | type[bool] | Lanes | IntLiteral | None
 # What an annotation declares: a kind, an array, a record, a named value, or a tuple of these.
 type Declared = Kind | ArrayOf | ConstantOf | Record | NamedValue | tuple[Declared, ...]
 type Returns = Declared | type[None]
@@ -133,6 +135,8 @@ def named(kind: Returns) -> str:
     match kind:
         case Record() | NamedValue():
             return kind.cls.__name__
+        case Lanes():
+            return kind.name
         case ArrayOf():
             return f"{named(kind.element)}[{', '.join(['int'] * kind.ndim)}]"
         case tuple():
@@ -154,7 +158,7 @@ def declared(value: Evaluated) -> Declared:
     A scalar declares as the numpy type it names. None names no device type.
     """
     value = unaliased(value)
-    if value is bool or isinstance(value, ArrayOf | ConstantOf):
+    if value is bool or isinstance(value, ArrayOf | ConstantOf | Lanes):
         return value
     if _is_record(value):
         return Record(value)
@@ -171,7 +175,9 @@ def declared(value: Evaluated) -> Declared:
 
 
 def numba_type(declared: Returns) -> types.Type | None:
-    """The Numba type a scalar, `bool` or a tuple of these declares; None for anything else."""
+    """The Numba type a scalar, `bool`, lanes or a tuple of these declares, else None."""
+    if isinstance(declared, Lanes):
+        return lane_type(declared)
     if isinstance(declared, tuple):
         elements = [numba_type(element) for element in declared]
         return None if None in elements else types.BaseTuple.from_types(elements)

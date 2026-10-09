@@ -21,15 +21,16 @@ import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from numba import types
-from numba.core.errors import TypingError
+from numba.core.errors import NumbaError, TypingError
 from numba.core.target_extension import target_override
 from numba.core.typing import templates
 from numba.cuda.dispatcher import CUDADispatcher
 from numba.cuda.target import CUDATypingContext
 from numba.np.numpy_support import as_dtype, from_dtype
 
-from patos.cuda.primitives import Bitmap, Filter, PairTable
+from patos.cuda.primitives import Bitmap, Filter, PairTable, bits
 from patos.cuda.runtime import Workspace
+from patos.cuda.scalars import ArrayOf
 from patos.cuda.typed import (
     AnnotationError,
     Constant,
@@ -40,6 +41,7 @@ from patos.cuda.typed import (
     cuda,
     device,
     i16,
+    i16x2,
     i32,
     i64,
     items,
@@ -51,6 +53,7 @@ from patos.cuda.typed import (
     thread_in_block,
     thread_index,
     u8,
+    u8x4,
     u16,
     u32,
     u64,
@@ -69,7 +72,6 @@ from patos.cuda.typed.declarations import (
     declared,
     named,
 )
-from patos.cuda.typed.scalars import ArrayOf
 
 # Checks, rewrites and typing rules need only the `cuda` extra, as numba-cuda decorates lazily;
 # what uploads or launches needs a device.
@@ -91,7 +93,7 @@ _NAMES: dict[Scalar, str] = {
 _ELEMENTS: dict[type[np.number], str] = {
     **_NAMES, np.number: "number", np.unsignedinteger: "unsigned"
 }  # fmt: skip
-_NUMBA: dict[type, types.Type] = {kind: from_dtype(np.dtype(kind)) for kind in _NAMES}
+_NUMBA: dict[Kind, types.Type] = {kind: from_dtype(np.dtype(kind)) for kind in _NAMES}
 _NUMBA[bool] = types.boolean
 _DTYPES = [np.bool_, np.int8, *_NAMES, np.float32, np.float64]
 scalars = st.sampled_from(list(_NAMES))
@@ -232,7 +234,7 @@ _NAMESPACE: dict[str, Callable | type | ModuleType] = {
     "items_through": items_through, "lane": lane, "thread_index": thread_index,
     "warp_index": warp_index, "block_index": block_index, "thread_in_block": thread_in_block,
     "warp_in_block": warp_in_block, "NamedTuple": NamedTuple, "Span": Span, "Viewed": Viewed,
-    "Unfit": Unfit, "Cell": Cell, "Stepped": Stepped,
+    "Unfit": Unfit, "Cell": Cell, "Stepped": Stepped, "u8x4": u8x4, "i16x2": i16x2, "bits": bits,
 }  # fmt: skip
 
 
@@ -667,6 +669,26 @@ _UNSTANDING: dict[str, tuple[Decorator, str, str]] = {
         device,
         "def f(x: Unfit) -> None:\n    pass\n",
         "`Unfit` names no device type",
+    ),
+    "lanes as a parameter of a kernel": (
+        kernel,
+        "def f(x: u8x4) -> None:\n    pass\n",
+        "a launch passes no u8x4; pass a u32 and convert it",
+    ),
+    "lanes cast to their own lanes": (
+        device,
+        "def f(x: u8x4) -> None:\n    y = u8x4(x)\n",
+        "`u8x4(x)` is a redundant cast: `x` is already u8x4",
+    ),
+    "lanes the return annotation converts to": (
+        device,
+        "def f(x: {kind}) -> i16x2:\n    return i16x2(x)\n",
+        "the return annotation converts to i16x2",
+    ),
+    "lanes a declaration converts to": (
+        device,
+        "def f(x: {kind}) -> None:\n    y: u8x4 = u8x4(x)\n",
+        "the declaration of `y` converts to u8x4",
     ),
 }
 
@@ -1864,8 +1886,13 @@ def test_a_record_holds_no_named_value() -> None:
     class Holds(Struct):
         span: Span
 
+    class Packs(Struct):
+        lanes: u8x4
+
     with pytest.raises(TypeError, match=r"Holds\.span is a named value"):
         Holds.declarations()
+    with pytest.raises(TypeError, match=r"Packs\.lanes is a named value or lanes"):
+        Packs.declarations()
 
 
 @pytest.mark.parametrize("name", _IDENTITIES)
@@ -2058,6 +2085,319 @@ def test_a_named_context_compiles_to_the_ptx_of_the_plain_tuple_it_replaces() ->
 
     assert instructions(ptx[0]) == instructions(ptx[1])
     assert outs[0].get().tolist() == outs[1].get().tolist()
+
+
+_MEMBERS = executed(
+    """
+    class Bounds(NamedTuple):
+        start: i32
+        end: i32
+
+        @device
+        def length(self) -> i32:
+            return self.end - self.start
+
+        @device
+        def holds(self, at: i32) -> bool:
+            return self.start <= at and at < self.end
+
+        @property
+        @device
+        def empty(self) -> bool:
+            return self.end <= self.start
+
+        @device
+        def widened(self, by: i32) -> Bounds:
+            return Bounds(self.start - by, self.end + by)
+
+
+    class Room(NamedTuple):
+        base: u64
+        capacity: u32
+
+        @device
+        def reserve(self, count: u32) -> Room:
+            return Room(self.base + count, self.capacity - count)
+
+        @property
+        @device
+        def end(self) -> u64:
+            return self.base + self.capacity
+
+
+    class Pair(NamedTuple):
+        end: i32
+        start: i32
+
+        @device
+        def length(self) -> i32:
+            return self.start * 100 + self.end
+
+
+    @device
+    def length(start: i32, end: i32) -> i32:
+        return end - start
+
+
+    @device
+    def pair_length(start: i32, end: i32) -> i32:
+        return start * 100 + end
+
+
+    @device
+    def holds(start: i32, end: i32, at: i32) -> bool:
+        return start <= at and at < end
+
+
+    @device
+    def empty(start: i32, end: i32) -> bool:
+        return end <= start
+
+
+    @device
+    def widened(start: i32, end: i32, by: i32) -> tuple[i32, i32]:
+        return start - by, end + by
+
+
+    @device
+    def reserve(base: u64, capacity: u32, count: u32) -> tuple[u64, u32]:
+        return base + count, capacity - count
+
+
+    @device
+    def end(base: u64, capacity: u32) -> u64:
+        return base + capacity
+
+
+    @kernel
+    def methods(starts: i32[int], ends: i32[int], at: i32, out: i64[int, int]) -> None:
+        for item in items(starts.size):
+            bounds = Bounds(starts[item], ends[item])
+            room = Room(item, 64).reserve(starts[item] & 7)
+            out[item, 0] = bounds.length()
+            out[item, 1] = bounds.holds(at)
+            out[item, 2] = bounds.empty
+            out[item, 3] = bounds.widened(2).length()
+            out[item, 4] = room.base
+            out[item, 5] = room.end
+            out[item, 6] = Pair(item, 7).length()
+
+
+    @kernel
+    def loose(starts: i32[int], ends: i32[int], at: i32, out: i64[int, int]) -> None:
+        for item in items(starts.size):
+            start, end_ = starts[item], ends[item]
+            base, capacity = reserve(item, 64, starts[item] & 7)
+            low, high = widened(start, end_, 2)
+            out[item, 0] = length(start, end_)
+            out[item, 1] = holds(start, end_, at)
+            out[item, 2] = empty(start, end_)
+            out[item, 3] = length(low, high)
+            out[item, 4] = base
+            out[item, 5] = end(base, capacity)
+            out[item, 6] = pair_length(7, item)
+
+
+    @kernel
+    def misspelled(out: i32[int]) -> None:
+        out[0] = Bounds(1, 2).measure()
+
+
+    @kernel
+    def unheld(out: i32[int]) -> None:
+        out[0] = Bounds(1, 2).holds()
+
+
+    @kernel
+    def overheld(out: i32[int]) -> None:
+        out[0] = Bounds(1, 2).holds(1, 2)
+
+
+    class Sized(NamedTuple):
+        size: i32
+
+        @device
+        def __len__(self) -> i32:
+            return self.size
+    """
+)
+
+
+def members_rows(spans: Sequence[tuple[int, int]], at: int) -> list[list[int]]:
+    """The int64 rows of shape `[n, 7]` that `_MEMBERS.methods` writes for spans and `at`."""
+    rows = []
+    for item, (start, end) in enumerate(spans):
+        taken = start & 7
+        base, capacity = item + taken, 64 - taken
+        rows.append(
+            [
+                end - start,
+                start <= at < end,
+                end <= start,
+                end - start + 4,
+                base,
+                base + capacity,
+                700 + item,
+            ]  # fmt: skip
+        )
+    return [[int(value) for value in row] for row in rows]
+
+
+@gpu
+@given(
+    spans=st.lists(
+        st.tuples(st.integers(-1000, 1000), st.integers(-1000, 1000)), min_size=1, max_size=8
+    ),
+    at=st.integers(-1000, 1000),
+)
+@settings(deadline=None, max_examples=15)
+def test_a_named_value_has_methods_and_attributes_in_the_ptx_of_the_loose_scalars(
+    *, spans: list[tuple[int, int]], at: int
+) -> None:
+    """Methods, attributes and a method returning a named value are device functions of fields.
+
+    `Bounds(start, end).length()`, `bounds.holds(at)`, `bounds.empty` and `room.reserve(count)`
+    compile to what device functions of the loose fields do, instruction for instruction, and
+    `Pair(...).length()` answers for its own class beside `Bounds`'s, as `Room.end` does beside
+    the field `Bounds.end`.
+    """
+    starts, ends = (cp.asarray(np.array(column, np.int32)) for column in zip(*spans, strict=True))
+    outs = [cp.zeros((len(spans), 7), np.int64) for _ in range(2)]
+    ptx = [
+        ptx_of(launched, starts, ends, at, out, count=len(spans))
+        for launched, out in zip((_MEMBERS.methods, _MEMBERS.loose), outs, strict=True)
+    ]
+
+    wanted = members_rows(spans, at)
+    assert instructions(ptx[0]) == instructions(ptx[1])
+    assert outs[0].get().tolist() == outs[1].get().tolist() == wanted
+
+
+@gpu
+@pytest.mark.parametrize(
+    ("launched", "refusal"),
+    [
+        ("misspelled", r"Unknown attribute 'measure' of type Bounds"),
+        ("unheld", r"Bounds\.holds: missing a required argument: 'at'"),
+        ("overheld", r"Bounds\.holds: too many positional arguments"),
+    ],
+)
+def test_a_call_of_a_method_its_named_value_lacks_or_with_other_arguments_is_refused(
+    *, launched: str, refusal: str
+) -> None:
+    """numba-cuda raises its own error for an unknown attribute and patos Numba's for the rest."""
+    with pytest.raises(NumbaError, match=refusal):
+        getattr(_MEMBERS, launched)[1](cp.zeros(1, np.int32))
+
+
+def test_a_named_value_keeps_the_operators_of_a_tuple() -> None:
+    """An operator defined on a named value is refused when device code first names it."""
+
+    def sized(value: _MEMBERS.Sized) -> i32:
+        return value.size
+
+    with pytest.raises(TypeError, match=r"Sized\.__len__: a named value keeps the operators"):
+        device(sized)
+
+
+_LANES = executed(
+    """
+    @device
+    def relabelled(word: u32) -> i16x2:
+        return word
+
+
+    @kernel(threads=32)
+    def converting(words: u32[int], out: u32[int, int]) -> None:
+        item = thread_index()
+        lanes: u8x4 = words[item]
+        out[item, 0] = lanes
+        out[item, 1] = u8x4(words[item])
+        out[item, 2] = relabelled(words[item])
+
+
+    @kernel(threads=32)
+    def copying(words: u32[int], out: u32[int, int]) -> None:
+        item = thread_index()
+        out[item, 0] = words[item]
+        out[item, 1] = words[item]
+        out[item, 2] = words[item]
+
+
+    @kernel
+    def mismatched(words: u32[int], out: u32[int]) -> None:
+        for item in items(words.size):
+            out[item] = bits.absdiff(words[item], u8x4(words[item]))
+
+
+    @kernel
+    def added(words: u32[int], out: u32[int]) -> None:
+        for item in items(words.size):
+            out[item] = u8x4(words[item]) + 1
+
+
+    @kernel
+    def narrowed(words: u32[int], out: u32[int]) -> None:
+        for item in items(words.size):
+            lanes: u8x4 = words[item]
+            low = u8(lanes)
+            out[item] = low
+
+
+    @kernel
+    def keyed(words: u32[int], out: u32[int]) -> None:
+        for item in items(words.size):
+            out[item] = bits.absdiff(b=words[item], a=7)
+
+
+    @kernel
+    def short(words: u32[int], out: u32[int]) -> None:
+        for item in items(words.size):
+            out[item] = bits.absdiff(words[item])
+    """
+)
+
+
+@gpu
+def test_lanes_convert_to_and_from_a_word_for_free() -> None:
+    """A word converts to lanes and back for free and keeps every bit.
+
+    A declaration, a cast, a return and a store convert, adding no instruction.
+    """
+    words = cp.asarray(np.random.default_rng(5).integers(0, 2**32, 32, dtype=np.uint32))
+    outs = [cp.zeros((32, 3), np.uint32) for _ in range(2)]
+    ptx = [
+        ptx_of(launched, words, out, count=32)
+        for launched, out in zip((_LANES.converting, _LANES.copying), outs, strict=True)
+    ]
+
+    assert outs[0].get().tolist() == [[word] * 3 for word in words.get().tolist()]
+    assert instructions(ptx[0]) == instructions(ptx[1])
+
+
+@gpu
+def test_lanes_take_no_arithmetic_and_no_operation_they_do_not_fit() -> None:
+    """A lane operation refuses operands it does not fit, and lanes take no arithmetic.
+
+    The refusal names what the operation takes; an add would carry from lane to lane.
+    """
+    words, out = cp.arange(4, dtype=np.uint32), cp.zeros(4, np.uint32)
+    with pytest.raises(NumbaError, match=r"absdiff takes \(u8x4, u8x4\);.* not \(u32, u8x4\)"):
+        _LANES.mismatched[4](words, out)
+    with pytest.raises(NumbaError, match="u8x4"):
+        _LANES.added[4](words, out)
+    with pytest.raises(NumbaError, match=r"absdiff: missing a required argument: 'b'"):
+        _LANES.short[4](words, out)
+    _LANES.keyed[4](words, out)
+    assert out.get().tolist() == [7, 6, 5, 4]
+
+
+@gpu
+def test_lanes_convert_to_no_integer_narrower_than_their_word() -> None:
+    """A lanes value read as a `u8` would drop three lanes, so the source goes through `u32`."""
+    words, out = cp.arange(4, dtype=np.uint32), cp.zeros(4, np.uint32)
+    with pytest.raises(NumbaError, match=r"u8x4 to uint8: lanes are a 32-bit word"):
+        _LANES.narrowed[4](words, out)
 
 
 _SHAPES = executed(

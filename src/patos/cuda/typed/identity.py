@@ -7,8 +7,8 @@ does. A warp is 32 threads, stated as a literal so that dividing by it types as 
 
 from numba import cuda
 
+from ..scalars import i32, i64
 from .decorators import device
-from .scalars import i32, i64
 
 
 @device

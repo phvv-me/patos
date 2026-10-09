@@ -24,10 +24,10 @@ from cupy.cuda import get_current_stream
 from numba import cuda, types
 from numba.cuda.np.numpy_support import as_dtype
 
+from ..scalars import ArrayOf, converted
 from .arguments import argument
-from .checks import read
 from .declarations import is_scalar, named
-from .decorators import is_member, made_for
+from .decorators import is_member, made_for, read_bound
 from .identity import (
     block_count,
     block_index,
@@ -37,7 +37,6 @@ from .identity import (
     warp_index,
 )
 from .rewrite import Helper, Items, Rewrite
-from .scalars import ArrayOf, converted
 
 if TYPE_CHECKING:
     from .struct import Struct
@@ -100,7 +99,7 @@ class Kernel:
 
     def bind(self, owner: type[Struct] | None, name: str) -> None:
         """Read and check the kernel, its `self` an `owner` record when it is a method."""
-        reading = read(self.function, kernel=True, owner=owner)
+        reading = read_bound(self.function, kernel=True, owner=owner)
         self.dispatcher = cuda.jit(
             Rewrite(reading, self.per.items(strided=self.strided)).rebuilt()
         )

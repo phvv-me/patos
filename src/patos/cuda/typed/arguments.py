@@ -13,7 +13,7 @@ from numba.cuda.np.numpy_support import from_dtype
 from .records import RecordType, record_type
 
 if TYPE_CHECKING:
-    from .scalars import Shaped
+    from ..scalars import Shaped
     from .struct import Struct
 
 # What a kernel receives for one value: its Numba type and the values that type flattens to.

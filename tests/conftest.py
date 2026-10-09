@@ -15,7 +15,9 @@ _EXTRAS = {
     "test_cuda_simd.py": _CUDA,
     "test_cuda_bytewise.py": _CUDA,
     "test_cuda_probe.py": _CUDA,
+    "test_cuda_cxx.py": _CUDA,
     "test_cuda_runtime.py": ("numpy",),
+    "test_cuda_scalars.py": ("numpy",),
 }
 collect_ignore = [
     suite
