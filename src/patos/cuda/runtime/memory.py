@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator, Iterator
 
     from numpy.typing import DTypeLike
 
@@ -65,7 +65,7 @@ class Workspace[V: DeviceBuffer]:
         return iter(self.buffers)
 
     @contextmanager
-    def retain_replaced(self) -> Iterator[None]:
+    def retain_replaced(self) -> Generator[None]:
         """Keep replaced cross-stream buffers alive until queued kernels finish."""
         self.retention_depth += 1
         try:

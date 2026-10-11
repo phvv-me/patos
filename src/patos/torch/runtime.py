@@ -1,5 +1,5 @@
 import random
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 import numpy as np
@@ -22,7 +22,7 @@ def seed_all(seed: int = 0) -> None:
 
 
 @contextmanager
-def seeded(seed: int) -> Iterator[None]:
+def seeded(seed: int) -> Generator[None]:
     """Draw inside the block from `seed`, handing the caller's RNG back untouched afterwards.
 
     The scoped counterpart to `seed_all`, for a draw that must come out identical on every run

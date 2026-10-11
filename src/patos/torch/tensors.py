@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 import torch
@@ -45,7 +45,7 @@ def eye_like(t: torch.Tensor, n: int | None = None, *, expand: bool = True) -> t
 
 
 @contextmanager
-def fp32_matmul_precision(mode: str) -> Iterator[None]:
+def fp32_matmul_precision(mode: str) -> Generator[None]:
     """Pin the fp32 matmul precision for a region, restoring the previous mode afterwards.
 
     mode: `"highest"` pins true IEEE fp32 accumulation, which every exactness bearing GEMM

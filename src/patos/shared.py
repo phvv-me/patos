@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 
 
@@ -53,7 +51,7 @@ class Shared[K, R]:
         self.registry_lock = threading.Lock()
 
     @contextmanager
-    def acquire(self, key: K) -> Iterator[R]:
+    def acquire(self, key: K) -> Generator[R]:
         """Hold the shared resource for `key` for the duration of the block.
 
         key: the resource family member wanted, a host alias, a path.

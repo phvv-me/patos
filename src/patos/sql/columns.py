@@ -59,7 +59,7 @@ class SQLModelFieldFactory(Protocol):
 
     def __call__[T](
         self,
-        default: T | PydanticUndefinedType = PydanticUndefined,
+        default: T | None | PydanticUndefinedType = PydanticUndefined,
         *,
         default_factory: Callable[[], T] | None = None,
         primary_key: bool | PydanticUndefinedType = PydanticUndefined,
@@ -119,7 +119,7 @@ def inferred_sql_type(
 
 def inferred_server_default[RowT](
     kind: TypeExpression,
-    default: RowT | PydanticUndefinedType,
+    default: RowT | None | PydanticUndefinedType,
     default_factory: Callable[[], RowT] | None,
 ) -> str | ClauseElement | None:
     """Derive a database default when the Python declaration is unambiguous."""
@@ -461,10 +461,10 @@ def PK[T](kind: TypeForm[T]) -> Field[T] | GeneratedField[int]:
     if expression == typing_cast(TypeExpression, UUID7):
         factory = typing_cast(Callable[[], T], uuid.uuid7)
         return Field(kind, default_factory=factory, primary_key=True)
-    if expression is int:
+    if kind is int:
         return GeneratedField(typing_cast(TypeForm[int], kind), default=None, primary_key=True)
-    if expression is str:
-        return Field(kind, primary_key=True, sa_type=Text)
+    if kind is str:
+        return Field[T](kind, primary_key=True, sa_type=Text)
     return Field(kind, primary_key=True)
 
 

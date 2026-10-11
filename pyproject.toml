@@ -63,7 +63,7 @@ dev = [
   "pytest-randomly>=3",
   "ruff>=0.15",
   "sqlmodel>=0.0.39,<0.1",
-  "ty>=0.0.59,<0.1",
+  "ty>=0.0.86,<0.1",
 ]
 docs = [
   "mkdocs-material>=9.5",
@@ -364,6 +364,40 @@ exclude = ["stubs/**"]
 [tool.pytest.ini_options]
 addopts = "-q -ra --strict-markers"
 testpaths = ["tests"]
+
+# The standalone GitHub workflow runs these same commands with the package's locked tools.
+[tool.mainboard.ci]
+os = ["linux", "osx"]
+
+[[tool.mainboard.ci.steps]]
+name = "sync"
+run = "uv sync --locked --extra dev --extra sql --extra torch"
+timeout = 300
+
+[[tool.mainboard.ci.steps]]
+name = "lint"
+run = "uv run --locked ruff check ."
+timeout = 60
+
+[[tool.mainboard.ci.steps]]
+name = "format"
+run = "uv run --locked ruff format --check ."
+timeout = 60
+
+[[tool.mainboard.ci.steps]]
+name = "pyrefly"
+run = "uv run --locked pyrefly check"
+timeout = 120
+
+[[tool.mainboard.ci.steps]]
+name = "ty"
+run = "uv run --locked ty check --error-on-warning"
+timeout = 120
+
+[[tool.mainboard.ci.steps]]
+name = "tests"
+run = "uv run --locked pytest --cov=patos"
+timeout = 1200
 
 [tool.coverage.run]
 source = ["patos"]

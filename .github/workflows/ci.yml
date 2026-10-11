@@ -27,9 +27,9 @@ jobs:
       # One sync names every extra the gate needs, and the `uv run` steps below reuse that
       # environment without pruning it. `torch` is here because `tests/test_torch.py` only
       # collects where the extra is installed, so leaving it out would silently skip a suite.
-      - run: uv sync --extra dev --extra sql --extra torch
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run pyrefly check
-      - run: uv run ty check --error-on-warning
-      - run: uv run pytest --cov=patos
+      - run: uv sync --locked --extra dev --extra sql --extra torch
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
+      - run: uv run --locked pyrefly check
+      - run: uv run --locked ty check --error-on-warning
+      - run: uv run --locked pytest --cov=patos

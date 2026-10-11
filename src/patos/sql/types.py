@@ -23,7 +23,7 @@ class TypedJSONB(JSONB[JSONValue]):
 
     cache_ok = True
 
-    class Comparator[T: JSONValue](JSONB.Comparator[T]):
+    class _Comparator[T: JSONValue](JSONB.Comparator[T]):
         @overload
         def __getitem__(self, index: type[bool]) -> JSONReader[bool]: ...
         @overload
@@ -44,7 +44,7 @@ class TypedJSONB(JSONB[JSONValue]):
         def __rshift__(self, other: str) -> ColumnElement[str]:
             return cast(ColumnElement[str], self.expr.op("->>", return_type=Text)(other))
 
-    comparator_factory = Comparator
+    comparator_factory = _Comparator
 
 
 class CosineHalfvec(HALFVEC):
@@ -53,10 +53,10 @@ class CosineHalfvec(HALFVEC):
     cache_ok = True
     render_bind_cast = True
 
-    class Comparator(HALFVEC.Comparator):
+    class _Comparator(HALFVEC.Comparator):
         def __matmul__(
             self, other: Sequence[float] | ColumnElement[Sequence[float]]
         ) -> ColumnElement[float]:
             return cast(ColumnElement[float], self.expr.op("<=>", return_type=Float)(other))
 
-    comparator_factory = Comparator
+    comparator_factory = _Comparator
