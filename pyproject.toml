@@ -167,18 +167,24 @@ invalid-return-type = "ignore"
 [tool.mcmr.rules."ALL-ARCH0005"]
 exclude = ["src/patos/cuda/runtime/streams.py"]
 
+# The backend is the one package meant to import numba-cuda's internals and cuda.core's private
+# error type; every other module reaches them through it. The house models extend pydantic's model
+# metaclass, which pydantic exports from no public module.
+[tool.mcmr.rules."PY-IMPO0007"]
+fence = ["src/patos/cuda/backend/**", "src/patos/bases.py"]
+
 # `device` and `ptx` hand back numba's dispatcher or intrinsic typed as the function it
 # compiles, so device code calling it is checked against the callee's own signature; the cast states
 # that on purpose.
 [tool.mcmr.rules."PY-TYPE0009"]
-exclude = ["src/patos/cuda/typed/decorators.py", "src/patos/cuda/typed/intrinsics.py"]
+exclude = ["src/patos/cuda/backend/decorators.py", "src/patos/cuda/backend/intrinsics.py"]
 
 # The package surfaces callers outside this checkout (cutoken) import from.
 [tool.mcmr.rules."PY-MODU0005"]
 exclude = [
   "src/patos/cuda/primitives/__init__.py",
   "src/patos/cuda/runtime/__init__.py",
-  "src/patos/cuda/typed/__init__.py",
+  "src/patos/cuda/typed.py",
 ]
 
 # Published functions of the same library, called from cutoken.
@@ -218,28 +224,28 @@ exclude = ["typing/**"]
 # these tuples are the domain, not a choice of collection.
 [tool.mcmr.rules."PY-COLL0004"]
 exclude = [
-  "src/patos/cuda/typed/declarations.py",
-  "src/patos/cuda/typed/decorators.py",
-  "src/patos/cuda/typed/intrinsics.py",
-  "src/patos/cuda/typed/overloads.py",
-  "src/patos/cuda/typed/reading.py",
-  "src/patos/cuda/typed/rewrite.py",
+  "src/patos/cuda/front/declarations.py",
+  "src/patos/cuda/backend/decorators.py",
+  "src/patos/cuda/backend/intrinsics.py",
+  "src/patos/cuda/backend/overloads.py",
+  "src/patos/cuda/front/reading.py",
+  "src/patos/cuda/front/rewrite.py",
 ]
 
 # The same tuples as the fields of the frozen models that hold them, hashed and compared.
 [tool.mcmr.rules."PY-PYDA0007"]
-exclude = ["src/patos/cuda/typed/declarations.py"]
+exclude = ["src/patos/cuda/front/declarations.py"]
 
 # The type reader meets AST constants as `bool` and `int`, a representation boundary.
 [tool.mcmr.rules."PY-INTE0001"]
 exclude = [
-  "src/patos/cuda/typed/declarations.py",
-  "src/patos/cuda/typed/reading.py",
-  "src/patos/cuda/typed/rewrite.py",
+  "src/patos/cuda/front/declarations.py",
+  "src/patos/cuda/front/reading.py",
+  "src/patos/cuda/front/rewrite.py",
 ]
 
-# `left` and `right` are the operands of a binary operator, and `operand`, `other`, `target` and
-# `value` the AST nodes of an operation or a store. The bit and byte primitives keep the operand
+# `left` and `right`, or `a` and `b`, are the operands of a binary operator, and `operand`, `other`,
+# `target` and `value` the AST nodes of an operation or a store. The bit and byte primitives keep the operand
 # order of the CUDA intrinsics they mirror (`__funnelshift_r(lo, hi, shift)`, `__dp4a`), and so
 # do the tests' stand-ins for them; a test kernel takes its input and output arrays; a Numba cast
 # takes the types it converts between. A division takes its dividend before its divisor as `//`
@@ -248,10 +254,10 @@ exclude = [
 [tool.mcmr.rules."ALL-PARA0001"]
 exclude = [
   "stubs/**",
-  "src/patos/cuda/typed/arithmetic.py",
-  "src/patos/cuda/typed/checks.py",
-  "src/patos/cuda/typed/lanes.py",
-  "src/patos/cuda/typed/rewrite.py",
+  "src/patos/cuda/front/arithmetic.py",
+  "src/patos/cuda/front/checks.py",
+  "src/patos/cuda/backend/lanes.py",
+  "src/patos/cuda/front/rewrite.py",
   "tests/test_cuda_cxx.py",
   "tests/test_cuda_primitives.py",
   "tests/test_cuda_simd.py",
@@ -260,6 +266,7 @@ exclude = [
   "src/patos/cuda/primitives/bytewise.py",
   "src/patos/cuda/primitives/integers.py",
   "src/patos/cuda/primitives/memory.py",
+  "src/patos/cuda/primitives/monoid.py",
   "src/patos/cuda/primitives/warp.py",
 ]
 
@@ -277,20 +284,28 @@ exclude = ["tests/test_cuda_primitives.py", "tests/test_cuda_types.py"]
 # beside the rewrite driving it, and the record metaclass beside its one base. A C++ unit sits
 # beside its compiler and headers, a lane type beside its model and the store it types, and a
 # numeric declaration beside the protocol it types. The hash records share one hash and one cuco
-# unit, and a block's operations sit beside the protocols that type them.
+# unit, and a block's operations and a monoid sit beside the protocols that type them. Numba
+# registers a type, its data model and each typing template as a class of its own, so a record's
+# device type keeps them together, a kernel keeps what it runs per item and its bound form, a
+# device function its member form, and the marshalling the array interface it reads.
 [tool.mcmr.rules."ALL-MODU0005"]
 exclude = [
   "src/patos/cuda/primitives/block.py",
   "src/patos/cuda/primitives/hash.py",
+  "src/patos/cuda/primitives/monoid.py",
   "src/patos/cuda/runtime/memory.py",
   "src/patos/cuda/runtime/streams.py",
   "src/patos/cuda/scalars.py",
-  "src/patos/cuda/typed/cxx.py",
-  "src/patos/cuda/typed/declarations.py",
-  "src/patos/cuda/typed/lanes.py",
-  "src/patos/cuda/typed/reading.py",
-  "src/patos/cuda/typed/rewrite.py",
-  "src/patos/cuda/typed/struct.py",
+  "src/patos/cuda/backend/arguments.py",
+  "src/patos/cuda/backend/cxx.py",
+  "src/patos/cuda/backend/decorators.py",
+  "src/patos/cuda/backend/kernels.py",
+  "src/patos/cuda/backend/records.py",
+  "src/patos/cuda/front/declarations.py",
+  "src/patos/cuda/backend/lanes.py",
+  "src/patos/cuda/front/reading.py",
+  "src/patos/cuda/front/rewrite.py",
+  "src/patos/cuda/front/record.py",
   "tests/test_cuda_types.py",
 ]
 
@@ -318,22 +333,33 @@ exclude = ["tests/test_cuda_primitives.py", "tests/test_cuda_simd.py", "tests/te
 [tool.mcmr.rules."ALL-FUNC0011"]
 exclude = [
   "src/patos/cuda/sources.py",
-  "src/patos/cuda/typed/decorators.py",
-  "src/patos/cuda/typed/records.py",
+  "src/patos/cuda/backend/decorators.py",
+  "src/patos/cuda/backend/records.py",
   "tests/test_cuda_simd.py",
   "tests/test_cuda_types.py",
 ]
 
 # patos is a published library: it logs through the standard `logging` its caller configures.
 [tool.mcmr.rules."PY-LOGG0001"]
-exclude = ["src/patos/cuda/typed/cxx.py"]
+exclude = ["src/patos/cuda/backend/cxx.py", "src/patos/cuda/backend/kernels.py"]
 
 # Each lane operation and each warp reduction is one name over an implementation per type, and
-# the stub type checkers read, kept beside each other. The numba stubs declare numba-cuda's whole
+# the stub type checkers read, kept beside each other, and so is each monoid's operator beside its
+# identity. The numba stubs declare numba-cuda's whole
 # `numba.cuda` namespace in the one module a checker reads it from: ty reads a stub submodule of
 # it as `Any`, since its `replace-imports-with-any` above names `numba.cuda.*`.
 [tool.mcmr.rules."ALL-MODU0002"]
-exclude = ["src/patos/cuda/primitives/bits.py", "src/patos/cuda/primitives/warp.py", "stubs/**"]
+exclude = [
+  "src/patos/cuda/primitives/bits.py",
+  "src/patos/cuda/primitives/monoid.py",
+  "src/patos/cuda/primitives/warp.py",
+  "stubs/**",
+]
+
+# A block's operations are the closures over its warp count, which the loops over its warps unroll
+# by, so `over` defines each of them in its body.
+[tool.mcmr.rules."ALL-FUNC0001"]
+exclude = ["src/patos/cuda/primitives/block.py"]
 
 # `met` is the rules read over Numba's types, which the tests pin against `meet`, so it stays a
 # module function they import rather than moving into the typing rule that calls it.
@@ -342,7 +368,16 @@ ignore_names = ["met"]
 
 # The initializer of a namespace package holds its docstring and nothing else.
 [tool.mcmr.rules."PY-MODU0002"]
-exclude = ["src/patos/cuda/__init__.py"]
+exclude = [
+  "src/patos/cuda/__init__.py",
+  "src/patos/cuda/backend/__init__.py",
+  "src/patos/cuda/front/__init__.py",
+]
+
+# `patos.cuda.typed` is the surface of the front and the backend, the one module that names what
+# callers import from it.
+[tool.mcmr.rules."PY-MODU0004"]
+exclude = ["src/patos/cuda/typed.py"]
 
 # The stub of `numba.cuda` sits where the module path puts it, `stubs/numba/cuda`, which leaves
 # `stubs/numba` holding nothing but that directory.
@@ -362,6 +397,7 @@ exclude = ["stubs/**"]
 exclude = ["stubs/**"]
 
 [tool.pytest.ini_options]
+strict = true
 addopts = "-q -ra --strict-markers"
 testpaths = ["tests"]
 

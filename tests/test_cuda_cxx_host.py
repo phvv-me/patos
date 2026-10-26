@@ -8,10 +8,9 @@ from types import SimpleNamespace
 
 import cupy as cp
 import pytest
-from test_cuda_cxx import compiled_by, compiles, summed, unit
-
+from patos.cuda.backend import cxx as cxx_module
 from patos.cuda.typed import Compiler
-from patos.cuda.typed import cxx as cxx_module
+from test_cuda_cxx import compiled_by, compiles, summed, unit
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
@@ -75,7 +74,7 @@ def test_a_cache_that_cannot_be_written_compiles_without_caching_and_says_so_onc
     blocked = tmp_path / "blocked"
     blocked.touch()
     monkeypatch.setenv("XDG_CACHE_HOME", str(blocked / "below"))
-    caplog.set_level(logging.INFO, logger="patos.cuda.typed.cxx")
+    caplog.set_level(logging.INFO, logger="patos.cuda.backend.cxx")
 
     with pytest.warns(RuntimeWarning) as said:
         for _ in range(2):

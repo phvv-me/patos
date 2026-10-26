@@ -8,7 +8,6 @@ import cupy as cp
 import numpy as np
 import pytest
 from numba.core.errors import TypingError
-
 from patos.cuda.primitives import bits, warp
 from patos.cuda.typed import (
     Vector,
@@ -24,6 +23,8 @@ from patos.cuda.typed import (
     u32,
     u64,
 )
+
+_STREAM = cp.cuda.Stream.null
 
 gpu = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
@@ -139,26 +140,29 @@ def test_a_dispatched_name_that_its_implementations_drift_from_is_refused_at_imp
 
 @gpu
 def test_a_literal_that_fits_several_types_ties_and_is_refused_not_resolved_to_one() -> None:
-    """`warp.sum(1)` is of i32, u32, i64 and u64 alike, and `bits.join(u8(1), 256)` fits two.
+    """`warp.broadcast(1, 0)` is of i32, u32, i64 and u64 alike, and `bits.join(u8(1), 256)` two.
 
     Numba asks about the literal before its plain `int64`, and a refusal stands once given:
-    `int64` would sum as `i64`, and the byte would join with its 256 cut to zero.
+    `int64` would broadcast as `i64`, and the byte would join with its 256 cut to zero.
     """
 
     @kernel(threads=32)
     def summed(out: Vector[i64]) -> None:
-        out[thread_index()] = warp.sum(1)
+        out[thread_index()] = warp.broadcast(1, 0)
 
     @kernel
     def joined(out: Vector[u64]) -> None:
-        out[thread_index()] = bits.join(u8(1), 256)
+        out[thread_index()] = bits.join(low=u8(1), high=256)
 
-    every = r"\(i32\) and \(u32\) and \(i64\) and \(u64\) fit equally well"
-    with pytest.raises(TypingError, match=rf"sum takes .*, not \(1\); {every}"):
-        summed[32](cp.zeros(32, np.int64))
+    every = (
+        r"\(i32, i32, i32\) and \(u32, i32, i32\) and \(i64, i32, i32\) and \(u64, i32, i32\)"
+        " fit equally well"
+    )
+    with pytest.raises(TypingError, match=rf"_shuffle takes .*, not \(1, 0, i32\); {every}"):
+        summed[32](cp.zeros(32, np.int64), stream=_STREAM)
     both = r"\(u8, u8\) and \(u32, u32\) fit equally well"
     with pytest.raises(TypingError, match=rf"join takes .*, not \(u8, 256\); {both}"):
-        joined[1](cp.zeros(1, np.uint64))
+        joined[1](cp.zeros(1, np.uint64), stream=_STREAM)
 
 
 @gpu
@@ -167,10 +171,10 @@ def test_a_literal_is_exact_for_each_type_that_holds_it_and_the_operand_decides(
 
     @kernel
     def joined(halves: Vector[u8], out: Vector[u64]) -> None:
-        out[0] = bits.join(halves[0], 255)
-        out[1] = bits.join(u32(halves[0]), 256)
+        out[0] = bits.join(low=halves[0], high=255)
+        out[1] = bits.join(low=u32(halves[0]), high=256)
 
     out = cp.zeros(2, np.uint64)
-    joined[1](cp.asarray(np.array([7], np.uint8)), out)
+    joined[1](cp.asarray(np.array([7], np.uint8)), out, stream=_STREAM)
 
     assert out.get().tolist() == [7 | 255 << 8, 7 | 256 << 32]

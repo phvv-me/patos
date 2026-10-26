@@ -2,7 +2,6 @@ import functools
 from abc import ABC, abstractmethod
 
 import pytest
-
 from patos import Registry, Strategy, StrategyError, StrFlag, value_dispatch
 
 
@@ -36,12 +35,12 @@ def test_strategy_from_registry_keys_lazy_factories_by_implementation_name() -> 
     built: list[str] = []
 
     class Stage(Registry, ABC):
+        @abstractmethod
+        def run(self) -> str: ...
+
         def __init__(self, *, workspace: str) -> None:
             built.append(self.name)
             self.workspace = workspace
-
-        @abstractmethod
-        def run(self) -> str: ...
 
     class Fast(Stage):
         def available(self) -> bool:

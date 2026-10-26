@@ -7,12 +7,13 @@ values whose miss is certain. Each is a record whose device members read like th
 mirror: `table.get(key)`, `map.find(key)`, `bit in bitmap`, `value in filter`.
 """
 
+from string import Template
 from typing import TYPE_CHECKING
 
 import cupy as cp
 import numpy as np
 
-from ..hashing import EMPTY_KEY, GOLDEN_GAMMA, MIX_ONE, MIX_TWO, splitmix, table_capacity
+from ..hashing import EMPTY_KEY, GOLDEN_GAMMA, MASK64, MIX_ONE, MIX_TWO, splitmix, table_capacity
 from ..typed import Cxx, Struct, Vector, cuco, device, i64, items, kernel, u32, u64
 from .memory import address
 
@@ -24,9 +25,11 @@ _FILTER_BITS = 1 << 16
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+    from ..runtime.streams import StreamLike
+
 _MAP = Cxx(
     cuco,
-    r"""
+    Template(r"""
 #include <cuco/static_map_ref.cuh>
 #include <cuda/std/functional>
 
@@ -40,9 +43,9 @@ using Storage = cuco::bucket_storage_ref<Slot, 1, Extent>;
 struct Splitmix {
   __host__ __device__ constexpr Key operator()(Key key) const noexcept
   {
-    Key value = key + 0x9E3779B97F4A7C15ull;
-    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ull;
-    value = (value ^ (value >> 27)) * 0x94D049BB133111EBull;
+    Key value = key + $gamma;
+    value = (value ^ (value >> 30)) * $one;
+    value = (value ^ (value >> 27)) * $two;
     return value ^ (value >> 31);
   }
 };
@@ -59,7 +62,7 @@ __device__ auto map(cuda::std::uint64_t slots, cuda::std::uint32_t shift)
   return Map{cuco::empty_key<Key>{~Key{0}}, cuco::empty_value<Payload>{-1}, {}, {},
              cuco::thread_scope_device, Storage{extent(shift), reinterpret_cast<Slot*>(slots)}};
 }
-""",
+""").substitute(gamma=f"0x{GOLDEN_GAMMA:X}ull", one=f"0x{MIX_ONE:X}ull", two=f"0x{MIX_TWO:X}ull"),
     name="cuco_map",
 )
 
@@ -109,11 +112,11 @@ def _probed(slots: u64, shift: u32, key: u64) -> i64:
 @device
 def device_splitmix(key: u64) -> u64:
     """`splitmix` over a `u64` key on the device, bit for bit the host body."""
-    value = (key + GOLDEN_GAMMA) & EMPTY_KEY
+    value = (key + GOLDEN_GAMMA) & MASK64
     value ^= value >> 30
-    value = (value * MIX_ONE) & EMPTY_KEY
+    value = (value * MIX_ONE) & MASK64
     value ^= value >> 27
-    value = (value * MIX_TWO) & EMPTY_KEY
+    value = (value * MIX_TWO) & MASK64
     return value ^ (value >> 31)
 
 
@@ -130,25 +133,27 @@ class StaticMap(Struct):
     shift: u32
 
     @classmethod
-    def build(cls, entries: Mapping[int, int]) -> StaticMap:
+    def build(cls, entries: Mapping[int, int], *, stream: StreamLike) -> StaticMap:
         """The map of `entries`, payloads by key, inserted on the device at most half full.
 
-        A key is never all ones; a payload is an unsigned 64-bit value, answered as an `i64`.
-        Entries go in their mapping's order, in rounds of doubling size, so an earlier one sits
-        nearer its home slot: listed most-read first, the first thousand of a merge table's
-        pairs take 1.01 probes, against 1.48 inserted all at once (gpt2).
+        Its slots are uploaded and its entries inserted on `stream`. A key is never all ones; a
+        payload is an unsigned 64-bit value, answered as an `i64`. Entries go in their mapping's
+        order, in rounds of doubling size, so an earlier one sits nearer its home slot: listed
+        most-read first, the first thousand of a merge table's pairs take 1.01 probes, against
+        1.48 inserted all at once (gpt2).
         """
         count = len(entries)
         shift = table_capacity(count).bit_length() - 1
-        built = cls(cp.full(2 << shift, EMPTY_KEY, cp.uint64), shift)
-        keys, payloads = (
-            cp.asarray(np.fromiter(column, np.uint64, count))
-            for column in (entries.keys(), entries.values())
-        )
+        with cp.cuda.Stream.from_external(stream):
+            built = cls(cp.full(2 << shift, EMPTY_KEY, cp.uint64), shift)
+            keys, payloads = (
+                cp.asarray(np.fromiter(column, np.uint64, count))
+                for column in (entries.keys(), entries.values())
+            )
         start, size = 0, 64
         while start < count:
             batch = slice(start, start + size)
-            built.insert[len(keys[batch])](keys[batch], payloads[batch])
+            built.insert[len(keys[batch])](keys[batch], payloads[batch], stream=stream)
             start, size = start + size, 2 * size
         return built
 
@@ -178,9 +183,9 @@ class PairTable(Struct):
     shift: u32
 
     @classmethod
-    def build(cls, entries: Mapping[int, int]) -> PairTable:
-        """The table of `entries`, payloads by key, built as `StaticMap.build` builds a map."""
-        return cls.of(StaticMap.build(entries))
+    def build(cls, entries: Mapping[int, int], *, stream: StreamLike) -> PairTable:
+        """The table of `entries`, built on `stream` as `StaticMap.build` builds a map."""
+        return cls.of(StaticMap.build(entries, stream=stream))
 
     @device
     def get(self, key: u64) -> i64:
@@ -193,10 +198,6 @@ class Bitmap(Struct):
 
     words: Vector[u64]
 
-    @device
-    def __contains__(self, bit: u64) -> bool:
-        return (self.words[bit >> 6] >> (bit & 63)) & 1 != 0
-
     @classmethod
     def pack(cls, flags: np.ndarray) -> Bitmap:
         """The bitmap whose bit `i` is `flags[i]`, packed into `uint64` words and uploaded.
@@ -204,6 +205,10 @@ class Bitmap(Struct):
         flags: a `bool` array with shape `[n]`, `n` a multiple of 64.
         """
         return cls(np.packbits(flags, bitorder="little").view(u64))
+
+    @device
+    def __contains__(self, bit: u64) -> bool:
+        return (self.words[bit >> 6] >> (bit & 63)) & 1 != 0
 
 
 class Filter(Struct):
@@ -215,13 +220,13 @@ class Filter(Struct):
 
     bits: Bitmap
 
-    @device
-    def __contains__(self, value: u64) -> bool:
-        return (device_splitmix(value) & (_FILTER_BITS - 1)) in self.bits
-
     @classmethod
     def build(cls, values: Iterable[int]) -> Filter:
         """The filter of `values`, uploaded."""
         flags = np.zeros(_FILTER_BITS, dtype=np.bool_)
         flags[[splitmix(value) & (_FILTER_BITS - 1) for value in values]] = True
         return cls(Bitmap.pack(flags))
+
+    @device
+    def __contains__(self, value: u64) -> bool:
+        return (device_splitmix(value) & (_FILTER_BITS - 1)) in self.bits

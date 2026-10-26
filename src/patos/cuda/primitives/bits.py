@@ -5,7 +5,8 @@ the CUDA intrinsic it mirrors. `cuda.popc`, `clz`, `ffs`, `brev` and `byte_perm`
 own. A SIMD operation is one name picked at compile time by the lanes its operands are, as CUDA's
 overloads and suffixes pick: `absdiff` of `u8x4` lanes is `__vabsdiffu4`, of `i8x4` lanes
 `__vabsdiffs4`, of two `u32` words `__usad(a, b, 0)`. A word converts to lanes for free
-(`u8x4(word)`), and lanes to a word (`u32(lanes)`).
+(`u8x4(word)`), and lanes to a word (`u32(lanes)`). `bytes_min` and `bytes_max` are the `min` and
+`max` of bytes as `Monoid`s over such words, which the warp and block engines reduce and scan by.
 
 The video instructions PTX emulates stay unused (`vabsdiff4.s32` 31 SASS instructions, `vabsdiff2`
 12 to 17, `vmin4` 19 to 34): a signed byte is biased into an unsigned one, a half differs through
@@ -16,6 +17,7 @@ The video instructions PTX emulates stay unused (`vabsdiff4.s32` 31 SASS instruc
 from typing import overload
 
 from ..typed import device, dispatched, i8x4, i16, i16x2, i32, ptx, u8, u8x4, u16, u16x2, u32, u64
+from .monoid import Monoid, ones, zero
 
 # Packed lanes of any kind, as a dispatched operation's operands or result.
 type Lane = u8x4 | i8x4 | u16x2 | i16x2
@@ -54,7 +56,10 @@ def join(low: u8, high: u8) -> u16: ...
 def join(low: u32, high: u32) -> u64: ...
 @dispatched(_join_u8, _join_u32)
 def join(low: u8 | u32, high: u8 | u32) -> u16 | u64:
-    """`high` above `low`, two halves of one unsigned width as a word of twice it."""
+    """`high` above `low`, two halves of one unsigned width as a word of twice it.
+
+    Call it by keyword, `join(low=a, high=b)`; the host's `hashing.pair_key` packs the same way.
+    """
     raise NotImplementedError
 
 
@@ -227,3 +232,18 @@ def min(a: u8x4, b: u8x4) -> u8x4:
 def max(a: u8x4, b: u8x4) -> u8x4:
     """The higher of `a`'s and `b`'s lanes, lane by lane."""
     raise NotImplementedError
+
+
+@device
+def _bytes_minimum(a: u32, b: u32) -> u32:
+    return min(u8x4(a), u8x4(b))
+
+
+@device
+def _bytes_maximum(a: u32, b: u32) -> u32:
+    return max(u8x4(a), u8x4(b))
+
+
+# The warp and block engines reduce the bytes of a `u32` word by these, lane by lane.
+bytes_min = Monoid(_bytes_minimum, ones)
+bytes_max = Monoid(_bytes_maximum, zero)

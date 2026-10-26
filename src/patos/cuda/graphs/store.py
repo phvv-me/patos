@@ -1,23 +1,58 @@
-"""The passes captured on one device."""
+"""The passes captured on one device, and what a pass that cannot be captured raises."""
 
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import ExitStack
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from cuda.core import Device
-from cuda.core._utils import cuda_utils
 
+from ..backend.errors import CUDAError
+from ..runtime.streams import handle
 from .arena import Arena
-from .captured import Captured
 from .recording import Recording
-from .refusal import Refusal
 
 if TYPE_CHECKING:
     from cuda.core import Stream as CoreStream
     from cuda.core.graph import Graph, GraphBuilder
 
-    from ..runtime import Stream
+    from ..runtime import Stream, StreamLike
+
+
+class Unrecordable(Exception):
+    """A pass that cannot be recorded: it reads the device back, or the device refused a node.
+
+    error: what was raised while recording, named in the message and kept as the `__cause__`.
+    """
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(f"{type(error).__name__}: {error}")
+        self.error = error
+
+
+class _Refusal:
+    """A scope that raises `Unrecordable` for any of `errors` the device raises inside it."""
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, _kind, error, _traceback) -> None:
+        if isinstance(error, self.errors):
+            raise Unrecordable(error) from error
+
+    def __init__(self, *errors: type[Exception]) -> None:
+        self.errors = errors
+
+
+class Captured[Result]:
+    """One recorded pass: the graph to replay and what the pass returned while it was recorded.
+
+    result: the pass's return value, whose arrays are the arena memory every replay rewrites.
+    """
+
+    def __init__(self, graph: Graph, result: Result) -> None:
+        self.graph = graph
+        self.result = result
 
 
 class Graphs[Key]:
@@ -34,7 +69,28 @@ class Graphs[Key]:
         self.limit = limit
         self.captured: OrderedDict[Key, Captured] = OrderedDict()
         self.streams: dict[int, CoreStream] = {}
-        self.refusals = (cuda_utils.CUDAError, arrays.cuda.runtime.CUDARuntimeError, RuntimeError)
+        self.refusals = (CUDAError, arrays.cuda.runtime.CUDARuntimeError, RuntimeError)
+
+    def _core(self, stream: StreamLike) -> CoreStream:
+        """The cuda.core stream over `stream`, made once."""
+        number = handle(stream)
+        held = self.streams.get(number)
+        if held is None:
+            device = Device()
+            device.set_current()
+            held = self.streams[number] = device.create_stream(stream)
+        return held
+
+    def _record[Result](
+        self, builder: GraphBuilder, body: Callable[[], Result], stream: Stream
+    ) -> tuple[Result, Graph]:
+        """Run `body` into `builder` and complete the graph; a device refusal is `Unrecordable`."""
+        recording = Recording(self.arrays, builder)
+        allocator = self.arrays.cuda.using_allocator(self.arena.malloc)
+        with _Refusal(*self.refusals), stream, allocator, recording:
+            result = body()
+            graph = builder.end_building().complete()
+        return result, graph
 
     def capture[Result](
         self, key: Key, body: Callable[[], Result], *, stream: Stream
@@ -71,26 +127,6 @@ class Graphs[Key]:
             self.captured.move_to_end(key)
         return found
 
-    def launch(self, captured: Captured, stream: Stream) -> None:
+    def launch(self, captured: Captured, stream: StreamLike) -> None:
         """Queue the recorded pass on `stream`."""
         captured.graph.launch(self._core(stream))
-
-    def _core(self, stream: Stream) -> CoreStream:
-        """The cuda.core stream over the array module's `stream`, made once."""
-        held = self.streams.get(stream.ptr)
-        if held is None:
-            device = Device()
-            device.set_current()
-            held = self.streams[stream.ptr] = device.create_stream(stream)
-        return held
-
-    def _record[Result](
-        self, builder: GraphBuilder, body: Callable[[], Result], stream: Stream
-    ) -> tuple[Result, Graph]:
-        """Run `body` into `builder` and complete the graph; a device refusal is `Unrecordable`."""
-        recording = Recording(self.arrays, builder)
-        allocator = self.arrays.cuda.using_allocator(self.arena.malloc)
-        with Refusal(*self.refusals), stream, allocator, recording:
-            result = body()
-            graph = builder.end_building().complete()
-        return result, graph

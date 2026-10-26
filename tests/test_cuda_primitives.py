@@ -5,14 +5,13 @@ import re
 from collections.abc import Callable, Sequence
 from functools import cache
 
+import compiled_code
 import cupy as cp
 import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from numba.core.errors import TypingError
-from numba.np.numpy_support import as_dtype
-
 from patos.cuda.primitives import block, integers, search, warp
 from patos.cuda.typed import (
     Kernel,
@@ -31,6 +30,8 @@ from patos.cuda.typed import (
     u32,
     u64,
 )
+
+_STREAM = cp.cuda.Stream.null
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
@@ -184,6 +185,12 @@ def reserving(
         held[slot] = thread
 
 
+@kernel(threads=32)
+def claiming(counter: Vector[i32], counts: Vector[i32], starts: Vector[i32]) -> None:
+    thread = thread_index()
+    starts[thread] = warp.claim(counter, counts[thread])
+
+
 @kernel
 def searching(values: Vector[number], probes: Probes) -> None:
     for item in items(probes.keys.size):
@@ -222,7 +229,7 @@ def test_a_warp_reduction_gives_every_lane_what_the_host_reduces_the_warp_to(
     """Each of three warps reduces its own 32 values, at the type they are."""
     values = np.array(data.draw(st.lists(numbers(kind), min_size=96, max_size=96)), dtype=kind)
     table = cp.asarray(np.stack([values, np.zeros_like(values)]))
-    warp_reducing(name)[96](table)
+    warp_reducing(name)[96](table, stream=_STREAM)
 
     reduced = [_REFERENCES[name](values[i : i + 32]) for i in range(0, 96, 32)]
     assert table[1].get().tolist() == np.repeat(reduced, 32).tolist()
@@ -244,7 +251,7 @@ def test_a_block_reduction_gives_every_thread_what_the_host_reduces_the_block_to
     drawn = data.draw(st.lists(numbers(kind), min_size=2 * count, max_size=2 * count))
     values = np.array(drawn, dtype=kind).reshape(2, count)
     table = cp.asarray(np.concatenate([values, np.zeros_like(values)]))
-    block_reducing(name, threads)[blocks](table)
+    block_reducing(name, threads)[blocks](table, stream=_STREAM)
 
     groups = values.reshape(2, blocks, threads)
     wanted = [
@@ -267,42 +274,48 @@ def test_the_unsigned_minimum_is_the_lowest_non_negative_value_or_minus_one(
     groups = data.draw(st.lists(st.one_of(st.just([-1] * width), mixed), min_size=1, max_size=3))
     values = np.array(groups, np.int32).ravel()
     table = cp.asarray(np.stack([values, np.zeros_like(values)]))
-    launched[len(groups) if width > 32 else values.size](table)
+    launched[len(groups) if width > 32 else values.size](table, stream=_STREAM)
 
     wanted = np.repeat([lowest_unsigned(np.array(group, np.int32)) for group in groups], width)
     assert table[1].get().tolist() == wanted.tolist()
 
 
+def _reduxes(name: str, kind: type[np.generic]) -> int:
+    """How many REDUX a warp reduction of `kind` by `name` takes.
+
+    One for a word, two for the halves of a wide bitwise word, minimum or maximum (and an `f64`'s
+    key), three for the 16-bit halves and high word of a wide sum, none for a float sum.
+    """
+    if kind in {np.int32, np.uint32}:
+        return 1
+    if kind in {np.int64, np.uint64}:
+        return 3 if name == "sum" else 2
+    return {"min": 1, "max": 1}.get(name, 0) * (1 if kind is np.float32 else 2)
+
+
 @pytest.mark.parametrize(("name", "kind"), _CASES)
-def test_a_32_bit_integer_reduction_is_one_redux(*, name: str, kind: type[np.generic]) -> None:
-    """An `i32` or `u32` reduces in one REDUX on every target; the other types reduce in none."""
+def test_a_reduction_takes_the_reduxes_its_strategy_does(
+    *, name: str, kind: type[np.generic]
+) -> None:
+    """The REDUX each type's strategy is made of are in the SASS, and a float sum has none."""
     launched = warp_reducing(name)
-    launched[32](cp.zeros((2, 32), kind))
-    compiled = next(
-        found for found in launched.dispatcher.overloads if as_dtype(found[0].dtype) == kind
-    )
-    sass = launched.dispatcher.inspect_sass(compiled)
+    launched[32](cp.zeros((2, 32), kind), stream=_STREAM)
+    sass = compiled_code.sass(launched, kind)
 
     found = re.findall(r"/\*[0-9a-f]{4}\*/\s+(?:@!?U?P\w+\s+)?(REDUX[\w.]*)", sass)
-    assert len(found) == (1 if kind in {np.int32, np.uint32} else 0)
+    assert len(found) == _reduxes(name, kind)
 
 
 def test_a_reduction_refuses_a_type_it_does_not_take() -> None:
-    """A byte reduces at no type of its own, and a signed word has no bitwise reduction."""
+    """A byte reduces at no type of its own: the shuffles take the six numeric types."""
 
     @kernel(threads=32)
     def bytes_summed(table: Matrix[u8]) -> None:
         table[1, thread_index()] = warp.sum(table[0, thread_index()])
 
-    @kernel(threads=32)
-    def signed_bits(table: Matrix[i32]) -> None:
-        table[1, thread_index()] = warp.or_(table[0, thread_index()])
-
-    taken = r"sum takes \(i32\); \(u32\); \(i64\); \(u64\); \(f32\); \(f64\), not \(u8\)"
+    taken = r"_shuffle takes \(i32, i32, i32\); \(u32, i32, i32\); .*not \(u8, \d+, i32\)"
     with pytest.raises(TypingError, match=taken):
-        bytes_summed[32](cp.zeros((2, 32), np.uint8))
-    with pytest.raises(TypingError, match=r"or_ takes \(u32\); \(u64\), not \(i32\)"):
-        signed_bits[32](cp.zeros((2, 32), np.int32))
+        bytes_summed[32](cp.zeros((2, 32), np.uint8), stream=_STREAM)
 
 
 @pytest.mark.parametrize("kind", _NUMBERS)
@@ -315,7 +328,7 @@ def test_a_broadcast_gives_each_lane_the_value_of_the_lane_it_names(
     values = np.array(data.draw(st.lists(numbers(kind), min_size=64, max_size=64)), dtype=kind)
     sources = np.array(data.draw(st.lists(st.integers(0, 31), min_size=64, max_size=64)))
     held = cp.zeros(64, kind)
-    broadcasting[64](cp.asarray(values), cp.asarray(sources, np.int32), held)
+    broadcasting[64](cp.asarray(values), cp.asarray(sources, np.int32), held, stream=_STREAM)
 
     wanted = [values[(index // 32) * 32 + source] for index, source in enumerate(sources)]
     assert held.get().tolist() == np.array(wanted, dtype=kind).tolist()
@@ -331,7 +344,7 @@ def test_a_ballot_is_the_mask_of_flagged_lanes_ranked_and_led_by_the_lowest(
     The prefix of a ballot is that count beside the warp's.
     """
     held = cp.zeros((64, 5), np.int64)
-    voting[64](cp.asarray(np.array(flags, np.uint8)), held)
+    voting[64](cp.asarray(np.array(flags, np.uint8)), held, stream=_STREAM)
 
     wanted = []
     for index in range(64):
@@ -353,7 +366,7 @@ def test_a_warp_reserves_a_run_of_slots_with_one_add_for_its_flagged_lanes(
     """
     counter = cp.array([base], np.int32)
     slots, written = cp.full(96, -2, np.int64), cp.full(base + 97, -2, np.int32)
-    reserving[96](counter, cp.asarray(np.array(flags, np.uint8)), slots, written)
+    reserving[96](counter, cp.asarray(np.array(flags, np.uint8)), slots, written, stream=_STREAM)
 
     taken, written_at = slots.get().tolist(), written.get().tolist()
     claimed = claimed_runs(taken, flags)
@@ -362,6 +375,26 @@ def test_a_warp_reserves_a_run_of_slots_with_one_add_for_its_flagged_lanes(
     assert taken.count(-1) == flags.count(False)
     assert all(written_at[slot] == thread for thread, slot in enumerate(taken) if flags[thread])
     assert counter.get().tolist() == [base + sum(flags)]
+
+
+@settings(deadline=None, max_examples=40)
+@given(counts=st.lists(st.integers(0, 5), min_size=96, max_size=96), base=st.integers(0, 50))
+def test_a_warp_claims_each_lanes_slots_with_one_add_for_the_whole_warp(
+    *, counts: Sequence[int], base: int
+) -> None:
+    """A lane's slots follow those of the lanes below it; the counter ends past every warp's."""
+    counter = cp.array([base], np.int32)
+    starts = cp.full(96, -2, np.int32)
+    claiming[96](counter, cp.asarray(np.array(counts, np.int32)), starts, stream=_STREAM)
+
+    got = starts.get().tolist()
+    slots = [set(range(start, start + count)) for start, count in zip(got, counts, strict=True)]
+    assert sum(map(len, slots)) == len(set().union(*slots)) == sum(counts)
+    assert set().union(*slots) == set(range(base, base + sum(counts)))
+    for first in range(0, 96, 32):
+        lanes = [(got[lane], counts[lane]) for lane in range(first, first + 32) if counts[lane]]
+        assert all(a + n == b for (a, n), (b, _) in zip(lanes, lanes[1:], strict=False))
+    assert counter.get().tolist() == [base + sum(counts)]
 
 
 @pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
@@ -384,7 +417,7 @@ def test_a_kernel_refuses_the_block_operations_made_for_another_size_of_block() 
 
     for reduce in (directly, through_a_function):
         with pytest.raises(TypeError, match=r"runs 128 threads a block .* made for 256"):
-            reduce[1](cp.zeros(128, np.int32), cp.zeros(128, np.int64))
+            reduce[1](cp.zeros(128, np.int32), cp.zeros(128, np.int64), stream=_STREAM)
 
 
 def test_a_block_has_whole_warps_and_its_operations_are_made_once_per_size() -> None:
@@ -408,7 +441,7 @@ def test_a_block_scan_gives_every_thread_the_sum_of_those_before_it_and_the_bloc
     )
     values = np.array(drawn, dtype=np.int32)
     held = cp.zeros((blocks * threads, 2), np.int64)
-    block_scanning(threads)[blocks](cp.asarray(values), held)
+    block_scanning(threads)[blocks](cp.asarray(values), held, stream=_STREAM)
 
     segments = values.reshape(blocks, threads)
     before = np.cumsum(segments, axis=1, dtype=np.int32) - segments
@@ -441,7 +474,7 @@ def test_a_bound_is_where_the_host_bisects_a_range_of_the_sorted_values(
         cp.zeros(len(ranges), np.int64),
         cp.zeros(len(ranges), np.int64),
     )
-    searching[len(ranges)](cp.asarray(np.array(values, values_kind)), probes)
+    searching[len(ranges)](cp.asarray(np.array(values, values_kind)), probes, stream=_STREAM)
 
     lower = [bisect.bisect_left(values, k, a, b) for a, b, k in ranges]
     assert probes.lower.get().tolist() == lower
@@ -466,7 +499,9 @@ def test_a_warp_copies_each_range_with_its_lanes_and_leaves_the_rest(
     ranges = np.array([[start, 640 * slot, length] for slot, (start, length) in enumerate(drawn)])
     source, target = np.arange(4096 + 600).astype(kind), np.full(640 * len(drawn), 7, kind)
     held = cp.asarray(target)
-    warp_copying[len(drawn)](cp.asarray(source), held, cp.asarray(ranges, np.uint64))
+    warp_copying[len(drawn)](
+        cp.asarray(source), held, cp.asarray(ranges, np.uint64), stream=_STREAM
+    )
 
     for start, to, length in ranges:
         target[to : to + length] = source[start : start + length]
@@ -483,7 +518,7 @@ def test_ceildiv_rounds_the_quotient_up_without_overflowing_near_the_top(
     values = data.draw(st.lists(ints(kind), min_size=64, max_size=64))
     divisors = data.draw(st.lists(st.integers(1, np.iinfo(kind).max), min_size=64, max_size=64))
     table = cp.asarray(np.array([values, divisors, values], kind))
-    dividing[64](table)
+    dividing[64](table, stream=_STREAM)
 
     wanted = [-(-value // divisor) for value, divisor in zip(values, divisors, strict=True)]
     assert table[2].get().tolist() == wanted
@@ -499,7 +534,7 @@ def test_ceildiv_by_a_literal_divides_at_the_type_of_the_value(
 ) -> None:
     """An int literal takes the type of the value it meets, so no wider signature ties."""
     held = cp.asarray(np.array(narrow, np.int32)), cp.asarray(np.array(wide, np.uint64))
-    dividing_by_32[64](*held)
+    dividing_by_32[64](*held, stream=_STREAM)
 
     assert [part.get().tolist() for part in held] == [
         [-(-value // 32) for value in values] for values in (narrow, wide)
@@ -511,10 +546,7 @@ def nsw_count(launched: Kernel, kind: type[np.generic], operation: str) -> int:
 
     Numba marks a signed add or multiply as never overflowing, which makes overflow undefined.
     """
-    compiled = next(
-        found for found in launched.dispatcher.overloads if as_dtype(found[0].dtype) == kind
-    )
-    return len(re.findall(rf"= {operation} nsw", launched.dispatcher.inspect_llvm(compiled)))
+    return len(re.findall(rf"= {operation} nsw", compiled_code.llvm(launched, kind)))
 
 
 def wrapped(total: int) -> int:
@@ -535,7 +567,7 @@ def summed_at_the_top(scope: str, kind: type[np.integer]) -> tuple[Kernel, list[
         launched = block_reducing("sum", 64)
         table, rows = [[top] * 64, [top - 1] * 64, [0] * 64, [0] * 64], [2, 3]
     held = cp.asarray(np.array(table, kind))
-    launched[32 if scope == "warp" else 1](held)
+    launched[32 if scope == "warp" else 1](held, stream=_STREAM)
     return launched, [int(held[row, 0]) for row in rows]
 
 
@@ -567,7 +599,7 @@ def test_the_sum_of_two_i32_operands_is_an_i64_until_it_is_converted_back() -> N
             held[1] = warp.sum(i32(left[lane_item] + right[lane_item]))
 
     held = cp.zeros(2, np.int64)
-    widening[32](cp.full(32, 2**31 - 1, np.int32), cp.ones(32, np.int32), held)
+    widening[32](cp.full(32, 2**31 - 1, np.int32), cp.ones(32, np.int32), held, stream=_STREAM)
 
     assert held.get().tolist() == [2**36, 0]
 
@@ -580,7 +612,7 @@ def test_ceildiv_rounds_up_at_the_edges_of_every_type(*, kind: type[np.integer])
     pairs = [(v, d) for v in values for d in (1, 2, 3, 7, info.max) if v >= info.min]
     columns = [[v for v, _ in pairs], [d for _, d in pairs], [0] * len(pairs)]
     table = cp.asarray(np.array(columns, kind))
-    dividing[len(pairs)](table)
+    dividing[len(pairs)](table, stream=_STREAM)
 
     assert table[2].get().tolist() == [-(-v // d) for v, d in pairs]
 
@@ -592,7 +624,7 @@ def test_the_signed_64_bit_ceildiv_multiplies_nothing_that_may_overflow() -> Non
     one, whose product never passes its value.
     """
     table = cp.asarray(np.array([[0], [1], [0]], np.int64))
-    dividing[1](table)
-    dividing[1](table.astype(np.uint64))
+    dividing[1](table, stream=_STREAM)
+    dividing[1](table.astype(np.uint64), stream=_STREAM)
 
     assert nsw_count(dividing, np.int64, "mul") == nsw_count(dividing, np.uint64, "mul")

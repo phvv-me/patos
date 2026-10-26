@@ -9,27 +9,9 @@ misaligned load faults on, and `window` reads any byte offset from the aligned w
 `pack`, `equal` and `copy` read elements one at a time through plain loads.
 """
 
-from llvmlite import ir
-from numba import types
-from numba.cuda import cgutils
-from numba.cuda.extending import intrinsic
-
+from ..backend.intrinsics import address
 from ..typed import Vector, device, i32, ptx, u8, u32, u64
 from . import bits
-
-
-@intrinsic
-def address(_context, array, index):
-    """The device address of `array[index]` as a `u64`, `index` up to one past the end."""
-
-    def lowered(context, builder, _call, arguments):
-        held, element = arguments
-        record = context.make_array(array)(context, builder, held)
-        element = context.cast(builder, element, index, types.intp)
-        pointer = cgutils.get_item_pointer(context, builder, array, record, [element])
-        return builder.ptrtoint(pointer, ir.IntType(64))
-
-    return types.uint64(array, index), lowered
 
 
 @ptx("ld.global.nc.u32 $result, [$at];")
@@ -88,8 +70,8 @@ def window(chars: Vector[u8], at: u64) -> tuple[u64, u64]:
     shift = (where & 3) << 3
     a, b, c = load32(base), load32(base + 4), load32(base + 8)
     d, e = load32(base + 12), load32(base + 16)
-    low = bits.join(bits.funnel(a, b, shift), bits.funnel(b, c, shift))
-    high = bits.join(bits.funnel(c, d, shift), bits.funnel(d, e, shift))
+    low = bits.join(low=bits.funnel(a, b, shift), high=bits.funnel(b, c, shift))
+    high = bits.join(low=bits.funnel(c, d, shift), high=bits.funnel(d, e, shift))
     return low, high
 
 

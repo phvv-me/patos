@@ -7,9 +7,12 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+# The child writes its answer to the file `REPORT` names.
 _MAIN = """
+import os
 import sys
 from importlib import import_module
+from pathlib import Path
 
 import layout
 from helper import bump
@@ -23,7 +26,8 @@ def run(out):
     out[0] = bump(layout.Tile.width)
 
 
-print(digest(reached(sys.modules[run.__module__]), seed="toolchain"))
+folder = digest(reached(sys.modules[run.__module__]), seed="toolchain")
+Path(os.environ["REPORT"]).write_text(folder)
 """
 _PROJECT = {
     "main.py": _MAIN,
@@ -58,8 +62,9 @@ def named(project: Path, *unrelated: str) -> str:
     environment = os.environ | {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": os.pathsep.join([str(project), *sys.path]),
+        "REPORT": str(project.parent / "report.txt"),
     }
-    done = subprocess.run(
+    subprocess.run(
         [sys.executable, "main.py", *unrelated],
         cwd=project,
         env=environment,
@@ -68,7 +73,7 @@ def named(project: Path, *unrelated: str) -> str:
         check=True,
         timeout=60,
     )
-    return done.stdout.strip()
+    return (project.parent / "report.txt").read_text()
 
 
 def test_a_kernel_s_folder_follows_what_its_module_reaches_and_nothing_else(

@@ -1,0 +1,228 @@
+"""What an annotation declares, read through `type` aliases at every level.
+
+A declaration is a scalar type, `bool`, packed lanes (`u8x4`), an array (`Vector[u8]`), a record
+(a `Struct`, read as `RecordOf`), a named value (a `typing.NamedTuple` of declarations), or a tuple
+of these. The readings of a function also know an int literal, which takes the type of the integer
+it meets.
+"""
+
+import annotationlib
+import inspect
+from collections.abc import Callable
+from types import GenericAlias, ModuleType
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    Protocol,
+    Self,
+    TypeAliasType,
+    TypeIs,
+    TypeVar,
+    final,
+    get_args,
+    get_origin,
+)
+
+import numpy as np
+
+from ...bases import FrozenModel, Runtime
+from ..scalars import SPELLINGS, ArrayOf, ConstantOf, Lanes, canonical
+
+if TYPE_CHECKING:
+    from .record import Value
+
+
+class _Recorded(Protocol):
+    __record_fields__: ClassVar[tuple[str, ...]]
+    __record_defaults__: ClassVar[dict[str, Value]]
+
+    @classmethod
+    def declarations(cls) -> dict[str, Declared]: ...
+
+
+# What a name in a function's globals or closure, or an annotation, evaluates to; a name not yet
+# defined stays a forward reference.
+type Evaluated = (
+    type
+    | TypeAliasType
+    | TypeVar
+    | GenericAlias
+    | ArrayOf
+    | ConstantOf
+    | Lanes
+    | annotationlib.ForwardRef
+    | ModuleType
+    | Callable
+    | int
+    | np.generic
+    | None
+)
+# What a reading knows of a value: its scalar type, `bool`, lanes, a literal, or None for unknown.
+type Kind = type[np.generic] | type[bool] | Lanes | IntLiteral | None
+# What an annotation declares: a kind, an array, a record, a named value, or a tuple of these.
+type Declared = Kind | ArrayOf | ConstantOf | RecordOf | NamedValue | tuple[Declared, ...]
+type Returns = Declared | type[None]
+# Anything the predicates below are asked about.
+type Subject = Evaluated | Returns
+
+_KEYWORD, _POSITIONAL = inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD
+
+
+@final
+class IntLiteral(FrozenModel):
+    """An int constant written in the function body, taking the type of the integer it meets."""
+
+    value: int
+
+
+@final
+class RecordOf(FrozenModel):
+    """A `Struct` annotation."""
+
+    cls: Runtime[type[_Recorded]]
+
+    def field(self, name: str) -> Declared:
+        """What field `name` declares, None for a name the record lacks."""
+        return self.cls.declarations().get(name)
+
+    def kinds(self) -> tuple[Declared, ...]:
+        """What each field declares, in order."""
+        return tuple(self.cls.declarations().values())
+
+    def signature(self) -> inspect.Signature:
+        """How device code calls the class: every field by position or name, as the host does.
+
+        A field without a default after one with a default, and every field after it, is
+        keyword-only, since a call cannot skip a default by position.
+        """
+        defaults = self.cls.__record_defaults__
+        parameters, defaulted, keyword = [], False, False
+        for name in self.cls.__record_fields__:
+            default = defaults.get(name, inspect.Parameter.empty)
+            keyword = keyword or (defaulted and default is inspect.Parameter.empty)
+            defaulted = defaulted or default is not inspect.Parameter.empty
+            kind = _KEYWORD if keyword else _POSITIONAL
+            parameters.append(inspect.Parameter(name, kind, default=default))
+        return inspect.Signature(parameters)
+
+
+@final
+class NamedValue(FrozenModel):
+    """A `typing.NamedTuple` annotation: a value that travels as one, its fields declared."""
+
+    cls: type[tuple]
+    fields: Runtime[tuple[tuple[str, Declared], ...]]
+
+    @classmethod
+    def of(cls, value: Subject) -> Self | None:
+        """The named value `value` declares, None unless it is a `NamedTuple` of device fields."""
+        if not (
+            isinstance(value, type)
+            and issubclass(value, tuple)
+            and hasattr(value, "__match_args__")
+        ):
+            return None
+        kinds: dict[str, Declared] = {
+            name: declared(kind) for name, kind in annotationlib.get_annotations(value).items()
+        }
+        if None in kinds.values() or any(isinstance(kind, ConstantOf) for kind in kinds.values()):
+            return None
+        return cls(cls=value, fields=tuple(kinds.items()))
+
+    def field(self, name: str) -> Declared:
+        """What field `name` declares, None for a name the value lacks."""
+        return dict(self.fields).get(name)
+
+    def kinds(self) -> tuple[Declared, ...]:
+        """What each field declares, in order."""
+        return tuple(kind for _, kind in self.fields)
+
+    def signature(self) -> inspect.Signature:
+        """How device code calls the class, as its constructor takes the fields."""
+        return inspect.signature(self.cls)
+
+
+@final
+class Signature(FrozenModel):
+    """What a compiled device function declares, for its callers' checks.
+
+    variables: the type parameter each generic parameter declares, by its index, the return's
+        being `len(parameters)`; such a parameter declares None.
+    """
+
+    parameters: Runtime[tuple[Declared, ...]]
+    returns: Runtime[Returns]
+    variables: Runtime[tuple[tuple[int, TypeVar], ...]] = ()
+
+
+def is_scalar(kind: Subject) -> TypeIs[type[np.number]]:
+    """Whether `kind` is one numeric type, as numpy names it or as patos does."""
+    return isinstance(kind, type) and issubclass(kind, np.number) and canonical(kind) in _SCALARS
+
+
+def is_integer(kind: Subject) -> TypeIs[type[np.integer]]:
+    return is_scalar(kind) and issubclass(kind, np.integer)
+
+
+def named(kind: Returns) -> str:
+    match kind:
+        case RecordOf() | NamedValue():
+            return kind.cls.__name__
+        case Lanes():
+            return kind.name
+        case ArrayOf():
+            return f"{('Vector', 'Matrix')[kind.ndim - 1]}[{named(kind.element)}]"
+        case tuple():
+            return f"tuple[{', '.join(named(element) for element in kind)}]"
+        case type():
+            return SPELLINGS.get(kind, kind.__name__)
+    return str(kind)
+
+
+def unaliased(value: Evaluated) -> Evaluated:
+    while isinstance(value, TypeAliasType):
+        value = value.__value__
+    return value
+
+
+def declared(value: Evaluated) -> Declared:
+    """Return what an annotation already evaluated declares, through type aliases at every level.
+
+    A scalar declares as the numpy type it names. None names no device type.
+    """
+    value = unaliased(value)
+    if value is bool or isinstance(value, ArrayOf | ConstantOf | Lanes):
+        return value
+    if _is_record(value):
+        return RecordOf(cls=value)
+    if (named_value := NamedValue.of(value)) is not None:
+        return named_value
+    if is_scalar(value):
+        return canonical(value)
+    origin = get_origin(value)
+    if isinstance(origin, TypeAliasType):
+        return declared(origin.__value__[get_args(value)])
+    if origin is tuple:
+        return tuple(declared(element) for element in get_args(value))
+    return None
+
+
+_SCALARS = frozenset(
+    {
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.float16,
+        np.float32,
+        np.float64,
+    }
+)
+
+
+def _is_record(value: Subject) -> TypeIs[type[_Recorded]]:
+    return isinstance(value, type) and hasattr(value, "__record_fields__")

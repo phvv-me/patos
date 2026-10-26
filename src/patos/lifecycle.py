@@ -1,3 +1,6 @@
+from collections.abc import Mapping
+
+
 class IllegalTransition(RuntimeError):
     """Raised when a :class:`Lifecycle` is asked to move along an edge its table does not allow."""
 
@@ -20,13 +23,21 @@ class Lifecycle[S]:
     initial: the state the machine starts in.
     """
 
-    def __init__(self, transitions: dict[S, set[S]], initial: S) -> None:
+    def __init__(self, transitions: Mapping[S, set[S]], initial: S) -> None:
         self.transitions = transitions
         self.current = initial
+
+    def __repr__(self) -> str:
+        marker = " (terminal)" if self.is_terminal() else ""
+        return f"<Lifecycle at {self.current!r}{marker}>"
 
     def allowed(self, target: S) -> bool:
         """Whether a move from the current state to `target` is one of the declared edges."""
         return target in self.transitions.get(self.current, set())
+
+    def is_terminal(self) -> bool:
+        """Whether no transition leaves the current state, so the lifecycle has settled."""
+        return not self.transitions.get(self.current, set())
 
     def to(self, target: S) -> S:
         """Advance to `target` if the edge is allowed, else raise :class:`IllegalTransition`.
@@ -41,11 +52,3 @@ class Lifecycle[S]:
             )
         self.current = target
         return target
-
-    def is_terminal(self) -> bool:
-        """Whether no transition leaves the current state, so the lifecycle has settled."""
-        return not self.transitions.get(self.current, set())
-
-    def __repr__(self) -> str:
-        marker = " (terminal)" if self.is_terminal() else ""
-        return f"<Lifecycle at {self.current!r}{marker}>"

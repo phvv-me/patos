@@ -81,59 +81,25 @@ class SQLModelFieldFactory(Protocol):
     ) -> FieldInfo: ...
 
 
-def concrete_type(kind: TypeExpression) -> type | None:
+def _concrete_type(kind: TypeExpression) -> type | None:
     """Find the concrete Python type inside annotations and optional unions."""
     origin = get_origin(kind)
     if origin is Annotated:
-        return concrete_type(typing_cast(TypeExpression, get_args(kind)[0]))
+        return _concrete_type(typing_cast(TypeExpression, get_args(kind)[0]))
     if origin in (Union, UnionType):
         candidates = [candidate for candidate in get_args(kind) if candidate is not NoneType]
-        return concrete_type(typing_cast(TypeExpression, candidates[0])) if candidates else None
+        return _concrete_type(typing_cast(TypeExpression, candidates[0])) if candidates else None
     if isinstance(origin, type):
         return origin
     return kind if isinstance(kind, type) else None
 
 
-def _annotation_is_nullable(kind: TypeExpression) -> bool:
+def _is_nullable_annotation(kind: TypeExpression) -> bool:
     """Return whether an annotation explicitly accepts `None`."""
     origin = get_origin(kind)
     if origin is Annotated:
-        return _annotation_is_nullable(typing_cast(TypeExpression, get_args(kind)[0]))
+        return _is_nullable_annotation(typing_cast(TypeExpression, get_args(kind)[0]))
     return origin in (Union, UnionType) and NoneType in get_args(kind)
-
-
-def inferred_sql_type(
-    kind: TypeExpression,
-    max_length: int | None = None,
-) -> SQLTypeExpression | None:
-    """Map annotations with PostgreSQL semantics that SQLModel cannot infer itself."""
-    concrete = concrete_type(kind)
-    if concrete is not None and issubclass(concrete, PGEnum):
-        return concrete.type
-    if concrete is datetime:
-        return DateTime(timezone=True)
-    if concrete is str and max_length is None:
-        return Text
-    return None
-
-
-def inferred_server_default[RowT](
-    kind: TypeExpression,
-    default: RowT | None | PydanticUndefinedType,
-    default_factory: Callable[[], RowT] | None,
-) -> str | ClauseElement | None:
-    """Derive a database default when the Python declaration is unambiguous."""
-    if not isinstance(default, PydanticUndefinedType) and default is not None:
-        if isinstance(default, bool):
-            return str(default).lower()
-        if isinstance(default, int | float | str):
-            return str(default)
-    concrete = concrete_type(kind)
-    if concrete is datetime and default_factory is not None:
-        return func.now()
-    if concrete is dict and default_factory is dict:
-        return "{}"
-    return None
 
 
 class JSONReader[V: Scalar]:
@@ -196,57 +162,74 @@ if TYPE_CHECKING:
     class Expr[T](ColumnElement[T]):
         """Typed SQL expression exposed by a `Column[T]` class attribute."""
 
-        def count(self, distinct: bool = False) -> ColumnElement[int]: ...
-        def sum(self, default: T | None = None) -> ColumnElement[T]: ...
-        def avg(
-            self, default: Decimal | float | None = None
-        ) -> ColumnElement[Decimal | float]: ...
-        def min(self, default: T | None = None) -> ColumnElement[T]: ...
-        def max(self, default: T | None = None) -> ColumnElement[T]: ...
-
-        def coalesce(self, *fallbacks: T | ClauseElement) -> ColumnElement[T]: ...
-        def greatest(self, *others: T | ClauseElement) -> ColumnElement[T]: ...
-        def least(self, *others: T | ClauseElement) -> ColumnElement[T]: ...
-        def length(self) -> ColumnElement[int]: ...
-        @overload
-        def lower(self) -> ColumnElement[T]: ...
-        @overload
-        def lower[R](self, *, result: type[R]) -> ColumnElement[R]: ...
-        def lower[R](
-            self, *, result: type[R] | None = None
-        ) -> ColumnElement[T] | ColumnElement[R]: ...
-
-        @overload
-        def upper(self) -> ColumnElement[T]: ...
-        @overload
-        def upper[R](self, *, result: type[R]) -> ColumnElement[R]: ...
-        def upper[R](
-            self, *, result: type[R] | None = None
-        ) -> ColumnElement[T] | ColumnElement[R]: ...
-
         @property
         def f(self) -> SQLFunctions[T]: ...
 
         @overload
         def __getitem__(self, index: type[bool]) -> JSONReader[bool]: ...
+
         @overload
         def __getitem__(self, index: type[int]) -> JSONReader[int]: ...
+
         @overload
         def __getitem__(self, index: type[float]) -> JSONReader[float]: ...
+
         @overload
         def __getitem__(self, index: type[datetime]) -> JSONReader[datetime]: ...
+
         @overload
         def __getitem__(self, index: str | int) -> ColumnElement[JSONValue]: ...
+
         def __getitem__(
             self, index: ScalarType | str | int
         ) -> ScalarReader | ColumnElement[JSONValue]: ...
-
-        def __rshift__(self, other: str) -> ColumnElement[str]: ...
 
         def __matmul__(
             self,
             other: Sequence[float] | ColumnElement[Sequence[float]],
         ) -> ColumnElement[float]: ...
+
+        def __rshift__(self, other: str) -> ColumnElement[str]: ...
+
+        def avg(
+            self, default: Decimal | float | None = None
+        ) -> ColumnElement[Decimal | float]: ...
+
+        def coalesce(self, *fallbacks: T | ClauseElement) -> ColumnElement[T]: ...
+
+        def count(self, distinct: bool = False) -> ColumnElement[int]: ...
+
+        def greatest(self, *others: T | ClauseElement) -> ColumnElement[T]: ...
+
+        def least(self, *others: T | ClauseElement) -> ColumnElement[T]: ...
+
+        def length(self) -> ColumnElement[int]: ...
+
+        @overload
+        def lower(self) -> ColumnElement[T]: ...
+
+        @overload
+        def lower[R](self, *, result: type[R]) -> ColumnElement[R]: ...
+
+        def lower[R](
+            self, *, result: type[R] | None = None
+        ) -> ColumnElement[T] | ColumnElement[R]: ...
+
+        def max(self, default: T | None = None) -> ColumnElement[T]: ...
+
+        def min(self, default: T | None = None) -> ColumnElement[T]: ...
+
+        def sum(self, default: T | None = None) -> ColumnElement[T]: ...
+
+        @overload
+        def upper(self) -> ColumnElement[T]: ...
+
+        @overload
+        def upper[R](self, *, result: type[R]) -> ColumnElement[R]: ...
+
+        def upper[R](
+            self, *, result: type[R] | None = None
+        ) -> ColumnElement[T] | ColumnElement[R]: ...
 
     class Column[T]:
         """Annotation facade with values on instances and SQL expressions on classes."""
@@ -276,6 +259,40 @@ else:
 class ModelField[T]:
     """Build one inferred SQLModel field for Patos model descriptors."""
 
+    @staticmethod
+    def _inferred_server_default[RowT](
+        kind: TypeExpression,
+        default: RowT | None | PydanticUndefinedType,
+        default_factory: Callable[[], RowT] | None,
+    ) -> str | ClauseElement | None:
+        """Derive a database default when the Python declaration is unambiguous."""
+        if not isinstance(default, PydanticUndefinedType) and default is not None:
+            if isinstance(default, bool):
+                return str(default).lower()
+            if isinstance(default, int | float | str):
+                return str(default)
+        concrete = _concrete_type(kind)
+        if concrete is datetime and default_factory is not None:
+            return func.now()
+        if concrete is dict and default_factory is dict:
+            return "{}"
+        return None
+
+    @staticmethod
+    def _inferred_sql_type(
+        kind: TypeExpression,
+        max_length: int | None = None,
+    ) -> SQLTypeExpression | None:
+        """Map annotations with PostgreSQL semantics that SQLModel cannot infer itself."""
+        concrete = _concrete_type(kind)
+        if concrete is not None and issubclass(concrete, PGEnum):
+            return concrete.type
+        if concrete is datetime:
+            return DateTime(timezone=True)
+        if concrete is str and max_length is None:
+            return Text
+        return None
+
     def __init__(
         self,
         kind: TypeForm[T],
@@ -303,12 +320,14 @@ class ModelField[T]:
             None
             if isinstance(default, PydanticUndefinedType)
             and default_factory is None
-            and _annotation_is_nullable(self.annotation)
+            and _is_nullable_annotation(self.annotation)
             else default
         )
         column_options: dict[str, str | ClauseElement] = {}
         resolved_default = (
-            inferred_server_default(self.annotation, resolved_python_default, default_factory)
+            ModelField._inferred_server_default(
+                self.annotation, resolved_python_default, default_factory
+            )
             if server_default is _INFER_SERVER_DEFAULT
             else server_default
         )
@@ -316,7 +335,7 @@ class ModelField[T]:
             column_options["server_default"] = resolved_default
         if onupdate is not None:
             column_options["onupdate"] = onupdate
-        resolved = sa_type or inferred_sql_type(self.annotation, max_length)
+        resolved = sa_type or ModelField._inferred_sql_type(self.annotation, max_length)
         factory = typing_cast(SQLModelFieldFactory, SQLModelField)
         generated = factory(
             resolved_python_default,
@@ -377,7 +396,7 @@ class GeneratedField[T](ModelField[T]):
         def __set__(self, instance: ModelInstance, value: T | Expr[T] | None) -> None: ...
 
 
-def declared_type[T](target: Expr[T]) -> TypeForm[T]:
+def _declared_type[T](target: Expr[T]) -> TypeForm[T]:
     """Recover a mapped attribute's original Python annotation from its declaring model."""
     mapped = typing_cast(InstrumentedAttribute[T], target)
     for owner in mapped.class_.__mro__:
@@ -426,7 +445,7 @@ def FK[T](
     remote = mapped.property.columns[0]
     if not remote.primary_key and not remote.unique:
         raise ValueError(f"{remote} must be primary or unique to be a foreign-key target")
-    kind = declared_type(target)
+    kind = _declared_type(target)
     foreign_key = f"{remote.table.fullname}.{remote.name}"
     if nullable:
         optional = typing_cast(TypeForm[T | None], or_(kind, None))

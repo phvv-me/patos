@@ -17,7 +17,7 @@ from pathlib import Path
 
 from mkdocs.config.defaults import MkDocsConfig
 
-SECTIONS: dict[str, list[str]] = {
+_SECTIONS: dict[str, list[str]] = {
     "Usage": ["index.md"],
     "Creational": ["patos/singleton.md", "patos/flyweight.md"],
     "Dispatch & selection": [
@@ -29,14 +29,14 @@ SECTIONS: dict[str, list[str]] = {
     "Reference": ["api.md", "release.md"],
 }
 
-LOCALE_SUFFIXES = (".pt-BR", ".es", ".ja", ".zh")
+_LOCALE_SUFFIXES = (".pt-BR", ".es", ".ja", ".zh")
 
-FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
-FENCED_CODE = re.compile(r"^```.*?^```", re.DOTALL | re.MULTILINE)
-H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+_FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
+_FENCED_CODE = re.compile(r"^```.*?^```", re.DOTALL | re.MULTILINE)
+_H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 
 
-def title_for(markdown: str, doc_path: str) -> str:
+def _title_for(markdown: str, *, doc_path: str) -> str:
     """Pick a link title: the page's first `# ` heading, else the file stem.
 
     Headings inside fenced code blocks (like `# paste ...` comments) do not
@@ -45,14 +45,14 @@ def title_for(markdown: str, doc_path: str) -> str:
     markdown: full source text of the page.
     doc_path: path of the page relative to `docs/`, used for the fallback.
     """
-    match = H1.search(FENCED_CODE.sub("", markdown))
+    match = _H1.search(_FENCED_CODE.sub("", markdown))
     if match:
         return match.group(1)
     stem = Path(doc_path).stem
     return "Home" if stem == "index" else stem
 
 
-def page_url(site_url: str, doc_path: str) -> str:
+def _page_url(site_url: str, *, doc_path: str) -> str:
     """Build the english page URL the way `mkdocs-llmstxt` does.
 
     With directory URLs, `foo/bar.md` is served at `foo/bar/` and the
@@ -68,14 +68,14 @@ def page_url(site_url: str, doc_path: str) -> str:
     return f"{base}{twin}"
 
 
-def read_page(docs_dir: Path, doc_path: str) -> str:
+def _read_page(docs_dir: Path, doc_path: str) -> str:
     """Read a source page and strip any YAML front-matter.
 
     docs_dir: the `docs/` directory.
     doc_path: path of the page relative to `docs/`.
     """
     text = (docs_dir / doc_path).read_text(encoding="utf-8")
-    return FRONT_MATTER.sub("", text).strip()
+    return _FRONT_MATTER.sub("", text).strip()
 
 
 def on_post_build(config: MkDocsConfig) -> None:
@@ -90,14 +90,14 @@ def on_post_build(config: MkDocsConfig) -> None:
 
     index_lines = [header]
     full_lines = [header]
-    for section, doc_paths in SECTIONS.items():
+    for section, doc_paths in _SECTIONS.items():
         index_lines.append(f"\n## {section}\n")
         for doc_path in doc_paths:
-            if any(Path(doc_path).stem.endswith(suffix) for suffix in LOCALE_SUFFIXES):
+            if any(Path(doc_path).stem.endswith(suffix) for suffix in _LOCALE_SUFFIXES):
                 continue
-            markdown = read_page(docs_dir, doc_path)
-            title = title_for(markdown, doc_path)
-            index_lines.append(f"- [{title}]({page_url(site_url, doc_path)})")
+            markdown = _read_page(docs_dir, doc_path)
+            title = _title_for(markdown, doc_path)
+            index_lines.append(f"- [{title}]({_page_url(site_url, doc_path)})")
             full_lines.append(f"\n# {title}\n\n{markdown}\n")
 
     (site_dir / "llms.txt").write_text("\n".join(index_lines) + "\n", encoding="utf-8")

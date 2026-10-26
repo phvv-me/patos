@@ -71,10 +71,6 @@ class ClassMember(Protocol):
 class SQLFunction[T]:
     """One dynamically named SQL function bound to a column as its first argument."""
 
-    def __init__(self, expression: ClauseElement, name: str) -> None:
-        self.expression = expression
-        self.name = name
-
     @overload
     def __call__(
         self,
@@ -105,33 +101,45 @@ class SQLFunction[T]:
             else function(self.expression, *args, type_=_SQL_RESULT_TYPES[result])
         )
 
+    def __init__(self, expression: ClauseElement, name: str) -> None:
+        self.expression = expression
+        self.name = name
+
 
 class SQLFunctions[T]:
     """Typed dynamic function namespace exposed as `Column.f`."""
 
-    def __init__(self, expression: ClauseElement) -> None:
-        self.expression = expression
-
     def __getattr__(self, name: str) -> SQLFunction[T]:
         return SQLFunction(self.expression, name)
+
+    def __init__(self, expression: ClauseElement) -> None:
+        self.expression = expression
 
 
 class AggregateComparator[T](ColumnProperty.Comparator[T]):
     """Expose common SQL aggregates directly on one mapped column expression."""
-
-    def count(self, distinct: bool = False) -> ColumnElement[int]:
-        """Count non-null values, optionally counting distinct values only."""
-        expression = self.__clause_element__()
-        return func.count(expression.distinct() if distinct else expression)
 
     @property
     def f(self) -> SQLFunctions[T]:
         """Bind an arbitrary SQL function to this column as its first argument."""
         return SQLFunctions(self.__clause_element__())
 
+    def avg(self, default: Decimal | float | None = None) -> ColumnElement[Decimal | float]:
+        """Average this numeric column and optionally replace an empty result."""
+        expression = func.avg(self.__clause_element__())
+        return cast(
+            ColumnElement[Decimal | float],
+            func.coalesce(expression, default) if default is not None else expression,
+        )
+
     def coalesce(self, *fallbacks: T | ClauseElement) -> ColumnElement[T]:
         """Return the first non-null value from this column and its fallbacks."""
         return cast(ColumnElement[T], func.coalesce(self.__clause_element__(), *fallbacks))
+
+    def count(self, distinct: bool = False) -> ColumnElement[int]:
+        """Count non-null values, optionally counting distinct values only."""
+        expression = self.__clause_element__()
+        return func.count(expression.distinct() if distinct else expression)
 
     def greatest(self, *others: T | ClauseElement) -> ColumnElement[T]:
         """Return the greatest value across this column and its peers."""
@@ -155,29 +163,11 @@ class AggregateComparator[T](ColumnProperty.Comparator[T]):
         """Return the SQL lower value, declaring a different result type when needed."""
         return cast(ColumnElement[T] | ColumnElement[R], func.lower(self.__clause_element__()))
 
-    @overload
-    def upper(self) -> ColumnElement[T]: ...
-
-    @overload
-    def upper[R](self, *, result: type[R]) -> ColumnElement[R]: ...
-
-    def upper[R](self, *, result: type[R] | None = None) -> ColumnElement[T] | ColumnElement[R]:
-        """Return the SQL upper value, declaring a different result type when needed."""
-        return cast(ColumnElement[T] | ColumnElement[R], func.upper(self.__clause_element__()))
-
-    def sum(self, default: T | None = None) -> ColumnElement[T]:
-        """Sum this numeric column and optionally replace an empty result."""
-        expression = func.sum(self.__clause_element__())
+    def max(self, default: T | None = None) -> ColumnElement[T]:
+        """Return the largest value and optionally replace an empty result."""
+        expression = func.max(self.__clause_element__())
         return cast(
             ColumnElement[T],
-            func.coalesce(expression, default) if default is not None else expression,
-        )
-
-    def avg(self, default: Decimal | float | None = None) -> ColumnElement[Decimal | float]:
-        """Average this numeric column and optionally replace an empty result."""
-        expression = func.avg(self.__clause_element__())
-        return cast(
-            ColumnElement[Decimal | float],
             func.coalesce(expression, default) if default is not None else expression,
         )
 
@@ -189,17 +179,42 @@ class AggregateComparator[T](ColumnProperty.Comparator[T]):
             func.coalesce(expression, default) if default is not None else expression,
         )
 
-    def max(self, default: T | None = None) -> ColumnElement[T]:
-        """Return the largest value and optionally replace an empty result."""
-        expression = func.max(self.__clause_element__())
+    def sum(self, default: T | None = None) -> ColumnElement[T]:
+        """Sum this numeric column and optionally replace an empty result."""
+        expression = func.sum(self.__clause_element__())
         return cast(
             ColumnElement[T],
             func.coalesce(expression, default) if default is not None else expression,
         )
 
+    @overload
+    def upper(self) -> ColumnElement[T]: ...
+
+    @overload
+    def upper[R](self, *, result: type[R]) -> ColumnElement[R]: ...
+
+    def upper[R](self, *, result: type[R] | None = None) -> ColumnElement[T] | ColumnElement[R]:
+        """Return the SQL upper value, declaring a different result type when needed."""
+        return cast(ColumnElement[T] | ColumnElement[R], func.upper(self.__clause_element__()))
+
 
 class ModelMeta(SQLModelMetaclass):
     """Finish each SQLModel mapping with Patos column expressions."""
+
+    def __init__(
+        cls,
+        name: str,
+        bases: tuple[type, ...],
+        namespace: dict[str, ClassMember],
+        **kwargs: ClassMember,
+    ) -> None:
+        super().__init__(name, bases, namespace, **kwargs)
+        mapper = cls.__dict__.get("__mapper__")
+        if not isinstance(mapper, Mapper):
+            return
+        for column in mapper.column_attrs:
+            attribute = cast(InstrumentedAttribute[ClassMember], getattr(cls, column.key))
+            attribute.comparator = AggregateComparator(column, mapper)
 
     def __new__(
         cls,
@@ -229,21 +244,6 @@ class ModelMeta(SQLModelMetaclass):
                 namespace[field_name] = ModelField(cast(TypeForm[ClassMember], annotation)).info
         namespace["__annotations__"] = cast(ClassMember, declared)
         return cast(type[SQLModel], super().__new__(cls, name, bases, namespace, **kwargs))
-
-    def __init__(
-        cls,
-        name: str,
-        bases: tuple[type, ...],
-        namespace: dict[str, ClassMember],
-        **kwargs: ClassMember,
-    ) -> None:
-        super().__init__(name, bases, namespace, **kwargs)
-        mapper = cls.__dict__.get("__mapper__")
-        if not isinstance(mapper, Mapper):
-            return
-        for column in mapper.column_attrs:
-            attribute = cast(InstrumentedAttribute[ClassMember], getattr(cls, column.key))
-            attribute.comparator = AggregateComparator(column, mapper)
 
 
 class Model(SQLModel, metaclass=ModelMeta):

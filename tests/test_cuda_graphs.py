@@ -1,7 +1,6 @@
 import cupy as cp
 import numpy as np
 import pytest
-
 from patos.cuda.graphs import Arena, Captured, Graphs, Unrecordable, branch, signal
 
 _SIZES = (1, 513, 40_000_000, 100)
@@ -87,10 +86,13 @@ def test_a_recording_survives_the_pool_being_churned_between_replays(store, lane
 
 
 def test_a_pass_that_reads_the_device_is_refused(store, lane) -> None:
+    """The refusal names the error the device raised, which it keeps as its cause."""
     value = cp.ones(4, dtype=cp.int32)
-    with pytest.raises(Unrecordable):
+    with pytest.raises(Unrecordable) as refused:
         store.capture("read", lambda: int(value[0]), stream=lane)
     assert store.get("read") is None
+    assert refused.value.error is refused.value.__cause__
+    assert str(refused.value).startswith(f"{type(refused.value.error).__name__}: ")
 
 
 def test_a_refused_capture_leaves_the_stream_able_to_record(store, lane) -> None:
@@ -100,17 +102,19 @@ def test_a_refused_capture_leaves_the_stream_able_to_record(store, lane) -> None
     assert store.capture("after", lambda: value + 1, stream=lane) is store.get("after")
 
 
-def choose(source: cp.ndarray, *, flag: cp.ndarray) -> cp.ndarray:
+def choose(source: cp.ndarray, *, flag: cp.ndarray, stream: cp.cuda.Stream) -> cp.ndarray:
     """The source doubled where the flag is set and raised by a hundred otherwise, plus one.
 
     source: an `int32` array with shape `[8]`. flag: an `int32` array with shape `[1]`.
+    stream: the current stream, which the branch reads the flag on.
     Returns an `int32` array with shape `[8]`.
     """
     out = cp.zeros(8, dtype=cp.int32)
     branch(
         flag,
-        lambda: out.__setitem__(slice(None), source * 2),
-        lambda: out.__setitem__(slice(None), source + 100),
+        lambda _: out.__setitem__(slice(None), source * 2),
+        lambda _: out.__setitem__(slice(None), source + 100),
+        stream=stream,
     )
     return out + 1
 
@@ -122,15 +126,18 @@ def branched(flag: int) -> np.ndarray:
 
 @pytest.mark.parametrize("flag", [0, 1])
 def test_a_branch_runs_on_the_host_in_a_pass_run_as_usual(lane, flag: int) -> None:
-    result = choose(cp.arange(8, dtype=cp.int32), flag=cp.full(1, flag, dtype=cp.int32))
+    source, raised = cp.arange(8, dtype=cp.int32), cp.full(1, flag, dtype=cp.int32)
+    result = choose(source, flag=raised, stream=lane)
     assert np.array_equal(cp.asnumpy(result), branched(flag))
 
 
 @pytest.mark.parametrize("flag", [0, 1])
 def test_a_recorded_branch_follows_the_flag_each_replay_finds(store, lane, flag: int) -> None:
     raised, source = cp.zeros(1, dtype=cp.int32), cp.arange(8, dtype=cp.int32)
-    choose(source, flag=raised)
-    captured = store.capture("branch", lambda: choose(source, flag=raised), stream=lane)
+    choose(source, flag=raised, stream=lane)
+    captured = store.capture(
+        "branch", lambda: choose(source, flag=raised, stream=lane), stream=lane
+    )
     raised.fill(flag)
     store.launch(captured, lane)
     lane.synchronize()
@@ -155,7 +162,7 @@ def signalled(seen: np.ndarray, event: cp.cuda.Event, stream: cp.cuda.Stream) ->
     runtime.memcpyAsync(
         seen.ctypes.data, value.data.ptr, 4, runtime.memcpyDeviceToHost, stream.ptr
     )
-    signal(cp, event)
+    signal(event, stream=stream)
     for _ in range(400):
         cp.cumsum(busy, out=busy)
     return value
@@ -170,7 +177,7 @@ def waits() -> tuple[np.ndarray, cp.cuda.Event, cp.cuda.Event]:
     """
     memory = cp.cuda.alloc_pinned_memory(4)
     event, tail = (cp.cuda.Event(disable_timing=True) for _ in range(2))
-    signal(cp, event)
+    signal(event, stream=cp.cuda.Stream.null)
     event.synchronize()
     return np.frombuffer(memory, dtype=np.int32, count=1), event, tail
 

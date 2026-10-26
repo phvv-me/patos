@@ -4,8 +4,10 @@ import cupy as cp
 import numpy as np
 import pytest
 from numba.cuda import dispatcher
+from patos.cuda import artifacts
+from patos.cuda.typed import Struct, Vector, device, i32, i64, items, kernel, u64
 
-from patos.cuda.typed import Struct, Vector, device, i32, i64, items, kernel, kernelcache, u64
+_STREAM = cp.cuda.Stream.null
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
@@ -19,14 +21,14 @@ class Held(Struct):
     def __getitem__(self, index: i32) -> u64:
         return self.slots[index]
 
+    @device
+    def shifted(self, by: i32) -> u64:
+        return self.slots[0] >> by
+
     @property
     @device
     def total(self) -> i64:
         return len(self.slots)
-
-    @device
-    def shifted(self, by: i32) -> u64:
-        return self.slots[0] >> by
 
 
 @kernel
@@ -45,7 +47,7 @@ def compiled(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         names.append(pyfunc.__name__)
         return original(pyfunc, *arguments, **options)
 
-    monkeypatch.setattr(kernelcache.Persistent, "enable_caching", lambda _: None)
+    monkeypatch.setattr(artifacts, "loaded", lambda _key: None)
     monkeypatch.setattr(dispatcher, "compile_cuda", spy)
     return names
 
@@ -60,7 +62,7 @@ def test_a_record_method_and_property_are_called_with_no_function_made_between(
     """
     slots = cp.asarray(np.array([8, 5, 3], np.uint64))
     out = cp.zeros(3, np.uint64)
-    reading[3](Held(slots), out)
+    reading[3](Held(slots), out, stream=_STREAM)
 
     assert out.get().tolist() == [4 + 3 + 8, 4 + 3 + 5, 4 + 3 + 3]
     assert {"shifted", "total", "__getitem__"} <= set(compiled)

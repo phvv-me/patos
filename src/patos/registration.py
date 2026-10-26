@@ -32,7 +32,7 @@ def repository_path(repository: Path, path: Path) -> tuple[Path, str]:
     return resolved, relative
 
 
-def lf_bytes(path: Path) -> bytes:
+def _lf_bytes(path: Path) -> bytes:
     """Read bytes with Git's portable CRLF representation normalized to LF."""
     return path.read_bytes().replace(b"\r\n", b"\n")
 
@@ -51,7 +51,7 @@ def statement_bytes(path: Path) -> bytes:
     _, body = _front_matter_and_body(path)
     start = next((index for index, line in enumerate(body) if line.startswith(_HEADING)), 0)
     end = next(
-        (index for index, line in enumerate(body[start:], start) if _settles(line)),
+        (index for index, line in enumerate(body[start:], start) if _is_settling(line)),
         len(body),
     )
     return b"".join(body[start:end])
@@ -63,7 +63,7 @@ def sha256_text_file(path: Path) -> str:
     Git may materialize tracked text with CRLF on Windows and LF on POSIX. Sealing Git's
     canonical LF representation makes the identity survive either checkout.
     """
-    return hashlib.sha256(lf_bytes(path)).hexdigest()
+    return hashlib.sha256(_lf_bytes(path)).hexdigest()
 
 
 def sha256_text_sources(paths: Iterable[Path], *, repository: Path) -> str:
@@ -72,10 +72,10 @@ def sha256_text_sources(paths: Iterable[Path], *, repository: Path) -> str:
     paths: the sources to seal, in any order.
     repository: the root every path is taken relative to.
     """
-    return _seal((relative, lf_bytes(path)) for path, relative in _resolved(repository, paths))
+    return _seal((relative, _lf_bytes(path)) for path, relative in _resolved(repository, paths))
 
 
-def _settles(line: bytes) -> bool:
+def _is_settling(line: bytes) -> bool:
     """Whether this line is the heading that closes the statement."""
     return line.lower().startswith(_SETTLEMENT_HEADINGS)
 
@@ -86,7 +86,7 @@ def _front_matter_and_body(path: Path) -> tuple[tuple[str, ...], tuple[bytes, ..
     A file whose first line is not a `---` fence has no front matter and is body only.
     Fields come back decoded and without their newline, the body keeps its raw LF bytes.
     """
-    lines = lf_bytes(path).splitlines(keepends=True)
+    lines = _lf_bytes(path).splitlines(keepends=True)
     if not lines or lines[0].rstrip(b"\n") != _FENCE:
         return (), tuple(lines)
     closing = next(
@@ -129,11 +129,19 @@ class SourceRegistration(FrozenModel):
     sources: tuple[Path, ...]
     seal_key: str = "registration_sha256"
 
+    def _paths(self) -> tuple[tuple[Path, str], ...]:
+        """The registered sources, ordered, with the node's membership enforced."""
+        sources = _resolved(self.repository, self.sources)
+        node, node_relative = repository_path(self.repository, self.node)
+        if all(path != node for path, _ in sources):
+            raise ValueError(f"registered sources do not include node {node_relative}")
+        return sources
+
     def digest(self) -> str:
         """Hash every registered source, the node contributing its statement alone."""
         node, _ = repository_path(self.repository, self.node)
         return _seal(
-            (relative, statement_bytes(path) if path == node else lf_bytes(path))
+            (relative, statement_bytes(path) if path == node else _lf_bytes(path))
             for path, relative in self._paths()
         )
 
@@ -153,11 +161,3 @@ class SourceRegistration(FrozenModel):
         if seals[0] != expected:
             raise RuntimeError("the registered source seal drifted")
         return expected
-
-    def _paths(self) -> tuple[tuple[Path, str], ...]:
-        """The registered sources, ordered, with the node's membership enforced."""
-        sources = _resolved(self.repository, self.sources)
-        node, node_relative = repository_path(self.repository, self.node)
-        if all(path != node for path, _ in sources):
-            raise ValueError(f"registered sources do not include node {node_relative}")
-        return sources

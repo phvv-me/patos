@@ -4,12 +4,14 @@
 import re
 from typing import NamedTuple
 
+import compiled_code
 import cupy as cp
 import numpy as np
 import pytest
-
 from patos.cuda.primitives import EMPTY_KEY, PairTable, StaticMap
 from patos.cuda.typed import Matrix, Vector, i64, items, kernel, u64
+
+_STREAM = cp.cuda.Stream.null
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
@@ -44,11 +46,13 @@ def probes(request: pytest.FixtureRequest) -> Probes:
     rng, entries = np.random.default_rng(request.param), request.param
     keys = np.unique(rng.integers(0, EMPTY_KEY, entries, dtype=np.uint64))
     payloads = rng.integers(0, 2**64, len(keys), dtype=np.uint64)
-    table = PairTable.build(dict(zip(keys.tolist(), payloads.tolist(), strict=True)))
+    table = PairTable.build(
+        dict(zip(keys.tolist(), payloads.tolist(), strict=True)), stream=_STREAM
+    )
     strays = rng.integers(0, EMPTY_KEY, entries + 1, dtype=np.uint64)
     asked = np.concatenate([keys, strays, np.array([0, EMPTY_KEY], dtype=np.uint64)])
     found = cp.zeros((len(asked), 2), np.int64)
-    looking_up[len(asked)](table, StaticMap.of(table), cp.asarray(asked), found)
+    looking_up[len(asked)](table, StaticMap.of(table), cp.asarray(asked), found, stream=_STREAM)
     stored = dict(zip(keys.tolist(), payloads.astype(np.int64).tolist(), strict=True))
     return Probes(table, [stored.get(key, -1) for key in asked.tolist()], found.get())
 
@@ -60,8 +64,8 @@ def test_the_probe_answers_what_was_stored_as_cuco_find_does(probes: Probes) -> 
 
 def test_the_pairs_sit_on_16_bytes_and_each_probe_is_one_vector_load(probes: Probes) -> None:
     """cuco's insert and probing iterator inline, and a probe loads its slot once, read-only."""
-    getting[1](probes.table, cp.zeros(1, np.uint64), cp.zeros(1, np.int64))
-    program = getting.dispatcher.inspect_sass(next(iter(getting.dispatcher.overloads)))
+    getting[1](probes.table, cp.zeros(1, np.uint64), cp.zeros(1, np.int64), stream=_STREAM)
+    program = compiled_code.sass(getting)
     assert cp.asarray(probes.table.slots).data.ptr % 16 == 0
     assert "LDG.E.128.CONSTANT" in program
     assert not re.search(r"\bCALL\.", program)

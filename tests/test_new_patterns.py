@@ -1,7 +1,6 @@
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-
 from patos import (
     Decorator,
     DerivedCache,
@@ -79,11 +78,11 @@ def test_decorator_forwards_everything_but_the_overrides() -> None:
         def __init__(self) -> None:
             self.size = 8
 
-        def label(self) -> str:
-            return "inner"
-
         def kind(self) -> str:
             return "raw"
+
+        def label(self) -> str:
+            return "inner"
 
     class Loud(Decorator[Inner]):
         def label(self) -> str:

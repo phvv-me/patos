@@ -7,11 +7,12 @@ from collections.abc import Callable, Sequence
 from functools import cache
 from typing import TYPE_CHECKING, NamedTuple
 
+import compiled_code
 import cupy as cp
 import numpy as np
 import pytest
-
-from patos.cuda.primitives import bits, memory, warp
+from patos.cuda.backend import intrinsics
+from patos.cuda.primitives import bits, memory, redux, warp
 from patos.cuda.typed import (
     AnnotationError,
     Kernel,
@@ -23,7 +24,6 @@ from patos.cuda.typed import (
     i8x4,
     i16x2,
     i32,
-    intrinsics,
     items,
     kernel,
     ptx,
@@ -34,6 +34,8 @@ from patos.cuda.typed import (
     u64,
     unsigned,
 )
+
+_STREAM = cp.cuda.Stream.null
 
 if TYPE_CHECKING:
     from patos.cuda.scalars import Packed
@@ -63,7 +65,8 @@ _SUMMING = {"sad", "dot"}
 _OPCODES = {
     "add.s32": True, "add.u32": True, "dp2a.lo.s32.s32": True, "dp2a.lo.u32.u32": True,
     "dp4a.s32.s32": True, "dp4a.u32.u32": True, "mov.s32": True, "mov.u32": True,
-    "mov.u64": True, "prmt.b32": True, "sad.s32": True, "sad.u32": True, "shf.r.wrap.b32": True,
+    "mov.b32": True, "mov.b64": True, "mov.u64": True, "prmt.b32": True, "sad.s32": True,
+    "sad.u32": True, "shf.r.wrap.b32": True,
     "vabsdiff4.u32.u32.u32": True, "vabsdiff4.u32.u32.u32.add": True,
     "ld.global.nc.u32": False, "ld.global.nc.u64": False, "ld.global.nc.v2.u64": False,
     "ld.global.nc.v4.u32": False, "redux.sync.add.s32": False, "redux.sync.add.u32": False,
@@ -160,8 +163,8 @@ def loading(wide: Vector[u64], narrow: Vector[u32], held: Matrix[u64]) -> None:
 @kernel
 def joining(halves: Matrix[u8], words: Matrix[u32], held: Matrix[u64]) -> None:
     for item in items(held.shape[0]):
-        held[item, 0] = bits.join(halves[item, 0], halves[item, 1])
-        held[item, 1] = bits.join(words[item, 0], words[item, 1])
+        held[item, 0] = bits.join(low=halves[item, 0], high=halves[item, 1])
+        held[item, 1] = bits.join(low=words[item, 0], high=words[item, 1])
 
 
 @kernel
@@ -199,7 +202,7 @@ def windowing(chars: Vector[u8], starts: Vector[u64], held: Matrix[u64]) -> None
 
 def _ptx_of(launched: Kernel) -> str:
     """The PTX `launched` compiled to, once it has been launched."""
-    return launched.dispatcher.inspect_asm(next(iter(launched.dispatcher.overloads)))
+    return compiled_code.ptx(launched)
 
 
 def _bytes_of(words: np.ndarray) -> np.ndarray:
@@ -223,7 +226,7 @@ def _permuted(table: np.ndarray) -> np.ndarray:
 
 def _sass(launched: Kernel) -> Counter[str]:
     """How many times each SASS instruction appears in what `launched` compiled to."""
-    sass = launched.dispatcher.inspect_sass(next(iter(launched.dispatcher.overloads)))
+    sass = compiled_code.sass(launched)
     found = re.finditer(r"/\*[0-9a-f]{4}\*/\s+(?:@!?U?P\w+\s+)?([A-Z][\w.]*)", sass)
     return Counter(match[1] for match in found if match[1] != "NOP")
 
@@ -269,7 +272,7 @@ def mixed() -> Mixed:
     operands = np.random.default_rng(7).integers(0, 2**32, (_COUNT, 3))
     table = cp.zeros((_COUNT, 5), np.uint32)
     table[:, :3] = cp.asarray(operands, np.uint32)
-    mixing[_COUNT](table)
+    mixing[_COUNT](table, stream=_STREAM)
     return Mixed(table.get())
 
 
@@ -294,7 +297,8 @@ def test_a_lane_operation_gives_what_the_host_computes_lane_by_lane(
     random = np.random.default_rng(len(name)).integers(0, 2**32, (3, _COUNT), dtype=np.uint32)
     words = np.concatenate([pairs.reshape(3, -1), random], axis=1)
     out = cp.zeros(words.shape[1], np.uint32)
-    applying(getattr(bits, name), lanes, summed=name in _SUMMING)[len(out)](cp.asarray(words), out)
+    applied = applying(getattr(bits, name), lanes, summed=name in _SUMMING)
+    applied[len(out)](cp.asarray(words), out, stream=_STREAM)
 
     assert out.get().tolist() == _computed(name, lanes, words).tolist()
 
@@ -314,7 +318,7 @@ def test_a_lane_operation_compiles_to_the_instructions_measured_for_its_lanes(
     ]
     words, out = cp.zeros((3, 128), np.uint32), cp.zeros(128, np.uint32)
     for compiled in launched:
-        compiled[128](words, out)
+        compiled[128](words, out, stream=_STREAM)
     found, base = (_sass(compiled) for compiled in launched)
 
     assert found.total() - base.total() + 1 == _SASS[name, lanes][capability == (12, 1)]
@@ -340,7 +344,7 @@ def test_every_template_of_patos_uses_opcodes_the_purity_table_classifies() -> N
     """A new opcode in a primitive is classified here before it ships."""
     templates = [
         found.template
-        for module in (bits, memory, warp)
+        for module in (bits, memory, redux, warp)
         for found in vars(module).values()
         if isinstance(getattr(found, "template", None), str)
     ]
@@ -374,7 +378,7 @@ def test_a_stub_returns_a_tuple_of_registers_or_nothing() -> None:
     narrow = rng.integers(0, 2**32, 256, dtype=np.uint32)
     wide = rng.integers(0, 2**64, 256, dtype=np.uint64)
     held, stored = cp.zeros((256, 2), np.uint64), cp.zeros(256, np.uint32)
-    effects[256](cp.asarray(narrow), cp.asarray(wide), held, stored)
+    effects[256](cp.asarray(narrow), cp.asarray(wide), held, stored, stream=_STREAM)
 
     doubled = (narrow * 2).astype(np.uint32)
     assert held.get().tolist() == np.stack([doubled, wide], 1).tolist()
@@ -394,7 +398,7 @@ def test_an_aligned_load_reads_the_words_the_host_holds_in_one_instruction() -> 
     """The word, the quad and the pair at every 16-byte group, and the address of an element."""
     wide = cp.asarray(np.random.default_rng(7).integers(0, 2**64, 1024, dtype=np.uint64))
     held = cp.zeros((512, 9), np.uint64)
-    loading[512](wide, wide.view(cp.uint32), held)
+    loading[512](wide, wide.view(cp.uint32), held, stream=_STREAM)
 
     host, groups = wide.get(), np.arange(512)
     narrow = host.view(np.uint32)
@@ -416,7 +420,7 @@ def test_a_window_is_the_sixteen_bytes_at_any_offset_and_zero_past_the_end(
     data = np.random.default_rng(size).integers(0, 256, offset + size + 8, dtype=np.uint8)
     chars, starts = cp.asarray(data)[offset : offset + size], cp.arange(size, dtype=cp.uint64)
     held = cp.zeros((size, 2), np.uint64)
-    windowing[size](chars, starts, held)
+    windowing[size](chars, starts, held, stream=_STREAM)
 
     padded = np.concatenate([chars.get(), np.zeros(16, np.uint8)])
     around = np.arange(size)[:, None] + np.arange(16)[None, :]
@@ -431,7 +435,7 @@ def test_join_puts_the_high_half_above_the_low_one_at_each_width() -> None:
     edges = [[0, 2**32 - 1], [2**32 - 1, 0]]
     words = np.vstack([edges, rng.integers(0, 2**32, (254, 2))]).astype(np.uint64)
     held = cp.zeros((256, 2), np.uint64)
-    joining[256](cp.asarray(halves, np.uint8), cp.asarray(words, np.uint32), held)
+    joining[256](cp.asarray(halves, np.uint8), cp.asarray(words, np.uint32), held, stream=_STREAM)
 
     wanted = np.column_stack([halves[:, 0] | halves[:, 1] << 8, words[:, 0] | words[:, 1] << 32])
     assert held.get().tolist() == wanted.tolist()
@@ -443,7 +447,7 @@ def test_bit_is_the_indexed_bit_of_a_word_of_either_width() -> None:
     wide = rng.integers(0, 2**64, 512, dtype=np.uint64)
     indices = rng.integers(0, 64, 512, dtype=np.uint32)
     held = cp.zeros((512, 2), np.uint32)
-    bit_reading[512](cp.asarray(narrow), cp.asarray(wide), cp.asarray(indices), held)
+    bit_reading[512](*map(cp.asarray, (narrow, wide, indices)), held, stream=_STREAM)
 
     wanted = [
         [int(n) >> (int(i) & 31) & 1, int(w) >> int(i) & 1]
@@ -461,7 +465,7 @@ def test_equal_compares_two_byte_ranges_up_to_their_first_difference() -> None:
     others = np.where(np.arange(512) < 256, starts, rng.integers(0, 4096 - 40, 512))
     ranges = np.column_stack([starts, others, rng.integers(0, 41, 512)]).astype(np.uint64)
     held = cp.zeros(512, np.uint8)
-    comparing[512](cp.asarray(left), cp.asarray(right), cp.asarray(ranges), held)
+    comparing[512](cp.asarray(left), cp.asarray(right), cp.asarray(ranges), held, stream=_STREAM)
 
     wanted = [bytes(left[a : a + n]) == bytes(right[b : b + n]) for a, b, n in ranges.astype(int)]
     assert held.get().astype(bool).tolist() == wanted
@@ -477,7 +481,7 @@ def test_copy_moves_each_range_in_one_thread_and_leaves_the_rest(kind: type[np.i
         [rng.integers(0, 4096 - 40, 256), np.arange(256) * 48, rng.integers(0, 41, 256)]
     ).astype(np.uint64)
     held = cp.asarray(target)
-    copying[256](cp.asarray(source), held, cp.asarray(ranges))
+    copying[256](cp.asarray(source), held, cp.asarray(ranges), stream=_STREAM)
 
     for start, to, count in ranges.astype(int):
         target[to : to + count] = source[start : start + count]
@@ -490,7 +494,7 @@ def test_pack_gives_up_to_sixteen_bytes_as_two_words_zero_above_them() -> None:
     chars = rng.integers(1, 256, 1024, dtype=np.uint8)
     ranges = np.column_stack([rng.integers(0, 1024 - 16, 340), np.tile(np.arange(17), 20)])
     held = cp.zeros((340, 2), np.uint64)
-    packing[340](cp.asarray(chars), cp.asarray(ranges.astype(np.uint64)), held)
+    packing[340](cp.asarray(chars), cp.asarray(ranges.astype(np.uint64)), held, stream=_STREAM)
 
     padded = [np.pad(chars[a : a + n], (0, 16 - n)) for a, n in ranges]
     assert held.get().tolist() == np.array(padded).view(np.uint64).tolist()

@@ -16,9 +16,6 @@ class Decorator[W]:
     wrapped: the object every non-overridden access delegates to.
     """
 
-    def __init__(self, wrapped: W) -> None:
-        self.wrapped = wrapped
-
     def __getattr__(self, name: str) -> object:
         """Forward an attribute missing on the decorator to the wrapped object.
 
@@ -36,6 +33,9 @@ class Decorator[W]:
                 f"{type(self).__name__} has no attribute {name!r} and no wrapped object yet.",
             ) from None
         return getattr(wrapped, name)
+
+    def __init__(self, wrapped: W) -> None:
+        self.wrapped = wrapped
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} wrapping {self.wrapped!r}>"

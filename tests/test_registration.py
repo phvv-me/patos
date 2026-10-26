@@ -2,7 +2,6 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
-
 from patos import SourceRegistration, sha256_text_file, sha256_text_sources, statement_bytes
 
 _SEAL = "registration_sha256"
@@ -25,7 +24,7 @@ The registered claim.
 """
 
 
-def _write(path: Path, text: str, newline: str = "\n") -> Path:
+def _write(path: Path, text: str, *, newline: str = "\n") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.replace("\n", newline).encode("utf-8"))
     return path

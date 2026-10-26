@@ -24,12 +24,6 @@ class StrFlag(Flag):
 
     literal: str
 
-    def __new__(cls, string: str) -> StrFlag:
-        member = object.__new__(cls)
-        member._value_ = 1 << len(cls.__members__)
-        member.literal = string
-        return member
-
     @property
     def string(self) -> str:
         """The member's literal, or the decomposed members' literals joined with spaces.
@@ -38,6 +32,12 @@ class StrFlag(Flag):
         custom ``__new__``, so their string is derived here from the canonical members.
         """
         return " ".join(member.literal for member in self)
+
+    def __new__(cls, string: str) -> StrFlag:
+        member = object.__new__(cls)
+        member._value_ = 1 << len(cls.__members__)
+        member.literal = string
+        return member
 
     def __str__(self) -> str:
         """Return the declared literal text for members and composites."""

@@ -12,10 +12,10 @@ from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
 
+import compiled_code
 import cupy as cp
 import numpy as np
 import pytest
-
 from patos.cuda.primitives import warp
 from patos.cuda.typed import (
     Compiler,
@@ -30,6 +30,8 @@ from patos.cuda.typed import (
     thread_index,
     tree_digest,
 )
+
+_STREAM = cp.cuda.Stream.null
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
@@ -89,14 +91,14 @@ def summed(launched: Kernel) -> list[int]:
     """What `launched` makes of 4096 random words: one sum per warp."""
     values = np.random.default_rng(3).integers(-1000, 1000, 4096, dtype=np.int32)
     out = cp.zeros(128, np.int32)
-    launched[4096](cp.asarray(values), out)
+    launched[4096](cp.asarray(values), out, stream=_STREAM)
     assert out.get().tolist() == values.reshape(128, 32).sum(axis=1).tolist()
     return out.get().tolist()
 
 
 def sass(launched: Kernel) -> list[str]:
     """The SASS instructions of what `launched` compiled to, in order."""
-    text = launched.dispatcher.inspect_sass(next(iter(launched.dispatcher.overloads)))
+    text = compiled_code.sass(launched)
     found = re.finditer(r"/\*[0-9a-f]{4}\*/\s+(?:@!?U?P\w+\s+)?([A-Z][\w.]*)", text)
     return [match[1] for match in found if match[1] != "NOP"]
 
@@ -124,7 +126,7 @@ def test_a_unit_compiles_once_a_host_and_is_then_linked_from_the_cache(
     cache: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A second unit of the same source, as a later process makes, compiles nothing."""
-    caplog.set_level(logging.INFO, logger="patos.cuda.typed.cxx")
+    caplog.set_level(logging.INFO, logger="patos.cuda.backend.cxx")
     for _ in range(2):
         summed(unit()[1])
 
@@ -136,7 +138,7 @@ def test_a_unit_compiled_with_another_macro_is_another_entry(
     cache: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Every flag helps decide a unit's bytes, so a macro makes a cache entry of its own."""
-    caplog.set_level(logging.INFO, logger="patos.cuda.typed.cxx")
+    caplog.set_level(logging.INFO, logger="patos.cuda.backend.cxx")
     for defines in (["NDEBUG"], ["NDEBUG", "PATOS_FLAGS=1"]):
         summed(unit(defines=defines)[1])
 
@@ -151,7 +153,7 @@ def test_a_damaged_entry_compiles_again_and_a_late_body_is_refused(
 
     A body declared late would link nowhere, since the unit's kernels hold the earlier object.
     """
-    caplog.set_level(logging.INFO, logger="patos.cuda.typed.cxx")
+    caplog.set_level(logging.INFO, logger="patos.cuda.backend.cxx")
     cub, sums = unit()
     summed(sums)
     (entry,) = cache.glob("cub-sm*.ltoir")

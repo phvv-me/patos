@@ -26,13 +26,6 @@ class Arg:
 
     __slots__ = ("kind", "value")
 
-    def __init__(self, value: object) -> None:
-        self.kind = type(value)
-        self.value = value
-
-    def __hash__(self) -> int:
-        return hash((self.kind, self.value))
-
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Arg) or self.kind is not other.kind:
             return False
@@ -42,6 +35,13 @@ class Arg:
             return self.value == other.value
         except _UNRESOLVABLE_EQUALITY:
             return False
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.value))
+
+    def __init__(self, value: object) -> None:
+        self.kind = type(value)
+        self.value = value
 
 
 CacheKey = tuple[tuple[Arg, ...], frozenset[tuple[str, Arg]]]

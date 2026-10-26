@@ -17,8 +17,17 @@ class DerivedCache[K, V]:
     which is why callers key it by the minimal subset rather than the full config.
     """
 
+    def __contains__(self, key: K) -> bool:
+        return key in self.store
+
     def __init__(self) -> None:
         self.store: dict[K, V] = {}
+
+    def __len__(self) -> int:
+        return len(self.store)
+
+    def __repr__(self) -> str:
+        return f"<DerivedCache size={len(self.store)}>"
 
     def get(self, key: K, build: Callable[[], V]) -> V:
         """The cached value for `key`, computing it through `build` once on the first miss.
@@ -29,15 +38,6 @@ class DerivedCache[K, V]:
         if key not in self.store:
             self.store[key] = build()
         return self.store[key]
-
-    def __len__(self) -> int:
-        return len(self.store)
-
-    def __contains__(self, key: K) -> bool:
-        return key in self.store
-
-    def __repr__(self) -> str:
-        return f"<DerivedCache size={len(self.store)}>"
 
 
 def content_key(*parts: object) -> str:

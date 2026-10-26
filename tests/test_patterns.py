@@ -1,9 +1,9 @@
+from collections.abc import Sequence
 from typing import ClassVar, Self, cast
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-
 from patos import FlyweightMeta, Registry, Singleton
 from patos.flyweight import Arg
 
@@ -517,14 +517,14 @@ def test_flyweight_survives_uncomparable_args() -> None:
     """
 
     class Tensorish:
-        def __init__(self, items: tuple[int, ...]) -> None:
-            self.items = items
+        def __eq__(self, other: object) -> bool:
+            raise RuntimeError("ambiguous: equality is a vector, not a bool")
 
         def __hash__(self) -> int:
             return hash(self.items)  # equal items collide, forcing the lookup to compare
 
-        def __eq__(self, other: object) -> bool:
-            raise RuntimeError("ambiguous: equality is a vector, not a bool")
+        def __init__(self, items: Sequence[int]) -> None:
+            self.items = items
 
     class Node(metaclass=FlyweightMeta):
         def __init__(self, code: Tensorish) -> None:

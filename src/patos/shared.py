@@ -30,26 +30,6 @@ class Shared[K, R]:
     `Shared` instance owns one resource family.
     """
 
-    def __init__(
-        self,
-        build: Callable[[K], R],
-        *,
-        close: Callable[[R], None] | None = None,
-        idle_seconds: float = 0.0,
-    ) -> None:
-        """build: constructs the resource for a key, called once per key at a time, and
-        returns the resource itself, never `None`, which is how an empty slot reads.
-
-        close: releases a resource, called under the slot lock when evicted.
-        idle_seconds: how long an unheld resource lingers before closing,
-            zero closing it the moment its last holder exits.
-        """
-        self.build = build
-        self.close = close
-        self.idle_seconds = idle_seconds
-        self.slots: dict[K, _Slot[R]] = {}
-        self.registry_lock = threading.Lock()
-
     @contextmanager
     def acquire(self, key: K) -> Generator[R]:
         """Hold the shared resource for `key` for the duration of the block.
@@ -70,6 +50,36 @@ class Shared[K, R]:
                 slot.idle_since = time.monotonic()
                 if slot.holders == 0 and self.idle_seconds == 0.0:
                     self.__evict(slot)
+
+    def __evict(self, slot: _Slot[R]) -> None:
+        resource, slot.resource = slot.resource, None
+        if self.close is not None and resource is not None:
+            self.close(resource)
+
+    def __init__(
+        self,
+        build: Callable[[K], R],
+        *,
+        close: Callable[[R], None] | None = None,
+        idle_seconds: float = 0.0,
+    ) -> None:
+        """Hold no resource yet.
+
+        build: constructs the resource for a key, called once per key at a time, and returns the
+            resource itself, never `None`, which is how an empty slot reads.
+        close: releases a resource, called under the slot lock when evicted.
+        idle_seconds: how long an unheld resource lingers before closing,
+            zero closing it the moment its last holder exits.
+        """
+        self.build = build
+        self.close = close
+        self.idle_seconds = idle_seconds
+        self.slots: dict[K, _Slot[R]] = {}
+        self.registry_lock = threading.Lock()
+
+    def __slot(self, key: K) -> _Slot[R]:
+        with self.registry_lock:
+            return self.slots.setdefault(key, _Slot())
 
     def drain(self) -> None:
         """Close every unheld resource now, the scope-exit companion to `sweep`."""
@@ -96,12 +106,3 @@ class Shared[K, R]:
                     self.__evict(slot)
                     evicted += 1
         return evicted
-
-    def __evict(self, slot: _Slot[R]) -> None:
-        resource, slot.resource = slot.resource, None
-        if self.close is not None and resource is not None:
-            self.close(resource)
-
-    def __slot(self, key: K) -> _Slot[R]:
-        with self.registry_lock:
-            return self.slots.setdefault(key, _Slot())

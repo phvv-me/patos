@@ -2,8 +2,7 @@
 of it is register arithmetic."""
 
 import pytest
-
-from patos.cuda.typed import intrinsics
+from patos.cuda.backend import intrinsics
 
 # An instruction that writes the carry flag, or reads it, is ordered against the others.
 _CARRIES = ["add.cc.u32", "sub.cc.u32", "mad.lo.cc.u32", "addc.u32", "subc.u32", "madc.hi.u32"]

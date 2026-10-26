@@ -10,6 +10,8 @@ import pytest
 from patos.cuda.primitives import bytewise
 from patos.cuda.typed import Kernel, Vector, items, kernel, number, u8, unsigned
 
+_STREAM = cp.cuda.Stream.null
+
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
 _COUNT = 4096
@@ -84,7 +86,7 @@ def _flagged(flags: np.ndarray) -> list[int]:
 def _launched(launch: Kernel, words: np.ndarray, *extra, dtype=np.uint64) -> list[int]:
     """What the kernel `launch` gave each of `words`, `extra` being the arguments after them."""
     held = cp.zeros(len(words), dtype)
-    launch[len(words)](cp.asarray(words), held, *extra)
+    launch[len(words)](cp.asarray(words), held, *extra, stream=_STREAM)
     return held.get().tolist()
 
 

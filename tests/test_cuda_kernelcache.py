@@ -1,9 +1,8 @@
 """Kernels compiled once for the sources they are made of: a cold process compiles and keeps
-them, a warm one loads them, and a source changed anywhere compiles them again."""
+their cubins, a warm one loads them, and a source changed anywhere compiles them again."""
 
 import json
 import os
-import pickle
 import subprocess
 import sys
 from pathlib import Path
@@ -11,8 +10,9 @@ from pathlib import Path
 import cupy as cp
 import numpy as np
 import pytest
+from patos.cuda.typed import Struct, Vector, i32, kernel
 
-from patos.cuda.typed import Struct, Vector, arguments, i32, kernel
+_STREAM = cp.cuda.Stream.null
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 
@@ -23,12 +23,25 @@ from patos.cuda.typed import device, i32
 def bump(x: i32) -> i32:
     return x + {offset}
 """
+# Counts the kernels the process compiled rather than loaded, which the backend logs.
+_COUNTED = """
+import json
+import logging
+
+compiled = []
+counting = logging.getLogger("patos.cuda.backend.kernels")
+counting.setLevel(logging.INFO)
+counting.addHandler(logging.Handler())
+counting.handlers[-1].emit = lambda record: compiled.append(record.getMessage())
+"""
+# The child writes what it ran to the file `REPORT` names.
 _REPORT = """
-hits, misses = run.dispatcher.stats.cache_hits, run.dispatcher.stats.cache_misses
-print(json.dumps({"result": result, "hits": sum(hits.values()), "misses": sum(misses.values())}))
+import os
+from pathlib import Path
+
+Path(os.environ["REPORT"]).write_text(json.dumps({"result": result, "compiled": len(compiled)}))
 """
 _PLAIN = """
-import json
 import cupy as cp
 import numpy as np
 from helper import bump
@@ -39,11 +52,10 @@ def run(out: Vector[i32]) -> None:
     out[0] = bump(1)
 
 out = cp.zeros(1, np.int32)
-run[1](out)
+run[1](out, stream=cp.cuda.Stream.null)
 result = int(out[0])
 """
 _LINKED = """
-import json
 import cupy as cp
 import numpy as np
 from patos.cuda.typed import Cxx, Vector, cccl, i32, kernel, thread_index
@@ -66,13 +78,12 @@ def run(values: Vector[i32], out: Vector[i32]) -> None:
         out[index // 32] = summed
 
 out = cp.zeros(4, np.int32)
-run[128](cp.arange(128, dtype=np.int32), out)
+run[128](cp.arange(128, dtype=np.int32), out, stream=cp.cuda.Stream.null)
 result = out.get().tolist()
 """
 
 
 _MISMATCHED = """
-import json
 import cupy as cp
 import numpy as np
 from patos.cuda.primitives import block
@@ -85,17 +96,11 @@ def run(values: Vector[i32], out: Vector[i32]) -> None:
     out[thread_index()] = _ACROSS.sum(values[thread_index()])
 
 try:
-    run[64](cp.ones(64, np.int32), cp.zeros(64, np.int32))
+    run[64](cp.ones(64, np.int32), cp.zeros(64, np.int32), stream=cp.cuda.Stream.null)
     result = "ran"
 except TypeError as error:
     result = str(error)
 """
-
-
-class Held(Struct):
-    """A record made at module level, which another process can find again."""
-
-    slots: Vector[i32]
 
 
 def launched(project: Path) -> dict[str, int | str | list[int]]:
@@ -104,8 +109,9 @@ def launched(project: Path) -> dict[str, int | str | list[int]]:
         "XDG_CACHE_HOME": str(project.parent / "cache"),
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": os.pathsep.join([str(project), *sys.path]),
+        "REPORT": str(project.parent / "report.json"),
     }
-    done = subprocess.run(
+    subprocess.run(
         [sys.executable, "main.py"],
         cwd=project,
         env=environment,
@@ -114,7 +120,7 @@ def launched(project: Path) -> dict[str, int | str | list[int]]:
         check=True,
         timeout=600,
     )
-    return json.loads(done.stdout.splitlines()[-1])
+    return json.loads((project.parent / "report.json").read_text())
 
 
 def test_a_kernel_compiles_once_and_a_changed_helper_compiles_it_again(tmp_path: Path) -> None:
@@ -125,39 +131,29 @@ def test_a_kernel_compiles_once_and_a_changed_helper_compiles_it_again(tmp_path:
     """
     project = tmp_path / "project"
     project.mkdir()
-    (project / "main.py").write_text(_PLAIN + _REPORT)
+    (project / "main.py").write_text(_COUNTED + _PLAIN + _REPORT)
     outcomes = []
     for offset in (10, 10, 20, 20):
         (project / "helper.py").write_text(_HELPER.format(offset=offset))
         outcomes.append(launched(project))
 
     assert outcomes == [
-        {"result": 11, "hits": 0, "misses": 1},
-        {"result": 11, "hits": 1, "misses": 0},
-        {"result": 21, "hits": 0, "misses": 1},
-        {"result": 21, "hits": 1, "misses": 0},
+        {"result": 11, "compiled": 1},
+        {"result": 11, "compiled": 0},
+        {"result": 21, "compiled": 1},
+        {"result": 21, "compiled": 0},
     ]
 
 
 def test_a_kernel_linking_a_cxx_unit_is_kept_once_it_is_linked(tmp_path: Path) -> None:
-    """The unit's cubin is the linked result, so the kernel pickles without the file it linked."""
+    """The kernel's cubin is the linked result, so a warm process needs no unit to link."""
     project = tmp_path / "project"
     project.mkdir()
-    (project / "main.py").write_text(_LINKED + _REPORT)
+    (project / "main.py").write_text(_COUNTED + _LINKED + _REPORT)
     cold, warm = (launched(project) for _ in range(2))
 
     sums = [sum(range(32 * warp, 32 * warp + 32)) for warp in range(4)]
-    assert (cold, warm) == (
-        {"result": sums, "hits": 0, "misses": 1},
-        {"result": sums, "hits": 1, "misses": 0},
-    )
-
-
-def test_a_record_type_pickles_as_the_record_class_it_was_made_for() -> None:
-    """The type a launch builds for `Held` is what a cached kernel loads, however many times."""
-    kind, _ = arguments.argument(Held(cp.zeros(2, np.int32)))
-
-    assert pickle.loads(pickle.dumps(kind)) is kind
+    assert (cold, warm) == ({"result": sums, "compiled": 1}, {"result": sums, "compiled": 0})
 
 
 def test_a_kernel_of_a_record_made_in_a_function_compiles_and_is_not_kept() -> None:
@@ -171,7 +167,7 @@ def test_a_kernel_of_a_record_made_in_a_function_compiles_and_is_not_kept() -> N
         record.slots[0] = 5
 
     slots = cp.zeros(1, np.int32)
-    write[1](Local(slots))
+    write[1](Local(slots), stream=_STREAM)
 
     assert slots.get().tolist() == [5]
 
@@ -185,10 +181,10 @@ def test_a_kernel_refused_at_its_launch_is_not_kept_for_a_process_that_would_not
     """
     project = tmp_path / "project"
     project.mkdir()
-    (project / "main.py").write_text(_MISMATCHED + _REPORT)
+    (project / "main.py").write_text(_COUNTED + _MISMATCHED + _REPORT)
     outcomes = [launched(project) for _ in range(2)]
 
-    assert [("made for 128" in str(found["result"]), found["hits"]) for found in outcomes] == [
-        (True, 0),
-        (True, 0),
+    assert [("made for 128" in str(found["result"]), found["compiled"]) for found in outcomes] == [
+        (True, 1),
+        (True, 1),
     ]

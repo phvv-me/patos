@@ -5,4 +5,3 @@ cli_command: patos
 description: Typed Python design and dispatch patterns, pip one in or copy one in
     and own the file
 project_name: patos
-

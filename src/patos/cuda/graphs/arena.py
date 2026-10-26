@@ -13,6 +13,11 @@ class Arena:
     adds one that fits it.
     """
 
+    @property
+    def nbytes(self) -> int:
+        """The device memory the blocks hold."""
+        return sum(block.size for block in self.blocks)
+
     def __init__(self, arrays) -> None:
         """Hold no memory until the first capture asks for some.
 
@@ -21,11 +26,6 @@ class Arena:
         self.arrays = arrays
         self.blocks: list = []
         self.index = self.used = 0
-
-    @property
-    def nbytes(self) -> int:
-        """The device memory the blocks hold."""
-        return sum(block.size for block in self.blocks)
 
     def holds(self, address: int) -> bool:
         """Whether `address` lies in memory this arena owns."""

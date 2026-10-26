@@ -15,9 +15,6 @@ class FieldProjection[Projected]:
     returns whatever the owning model's `__project__` builds for the field.
     """
 
-    def __init__(self, name: str) -> None:
-        self.name = name
-
     def __get__(
         self,
         instance: Projection[Projected] | None,
@@ -26,6 +23,9 @@ class FieldProjection[Projected]:
         if instance is not None:
             raise AttributeError(self.name)
         return owner.__project__(self.name)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
 
 
 class Projection[Projected](FrozenModel):

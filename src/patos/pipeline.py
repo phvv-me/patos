@@ -44,17 +44,11 @@ class Pipeline[T]:
     def __init__(self, stages: Iterable[Reversible[T, T]] = ()) -> None:
         self.stages = list(stages)
 
-    def forward(self, value: T) -> T:
-        """Send `value` down through every stage's `forward`, outermost stage first."""
-        for stage in self.stages:
-            value = stage.forward(value)
-        return value
+    def __len__(self) -> int:
+        return len(self.stages)
 
-    def inverse(self, value: T) -> T:
-        """Bring `value` back up through every stage's `inverse`, innermost stage first."""
-        for stage in reversed(self.stages):
-            value = stage.inverse(value)
-        return value
+    def __repr__(self) -> str:
+        return f"<Pipeline stages={[type(stage).__name__ for stage in self.stages]}>"
 
     def apply(self, value: T, core: Callable[[T], T] = lambda value: value) -> T:
         """Run `core` in the fully-transformed frame, then unwind back to the original space.
@@ -70,12 +64,18 @@ class Pipeline[T]:
         """
         return self.inverse(core(self.forward(value)))
 
+    def forward(self, value: T) -> T:
+        """Send `value` down through every stage's `forward`, outermost stage first."""
+        for stage in self.stages:
+            value = stage.forward(value)
+        return value
+
+    def inverse(self, value: T) -> T:
+        """Bring `value` back up through every stage's `inverse`, innermost stage first."""
+        for stage in reversed(self.stages):
+            value = stage.inverse(value)
+        return value
+
     def then(self, stage: Reversible[T, T]) -> Pipeline[T]:
         """A new pipeline with `stage` appended as the new innermost stage."""
         return Pipeline([*self.stages, stage])
-
-    def __len__(self) -> int:
-        return len(self.stages)
-
-    def __repr__(self) -> str:
-        return f"<Pipeline stages={[type(stage).__name__ for stage in self.stages]}>"

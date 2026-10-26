@@ -11,9 +11,9 @@ MIX_ONE = 0xBF58476D1CE4E5B9
 MIX_TWO = 0x94D049BB133111EB
 
 
-def pair_key(left: int, *, right: int) -> int:
-    """Pack two 32-bit values into one lookup key."""
-    return ((left << 32) | right) & MASK64
+def pair_key(*, low: int, high: int) -> int:
+    """Pack two 32-bit values into one lookup key, `high` above `low`, as `bits.join` does."""
+    return ((high << 32) | low) & MASK64
 
 
 def splitmix(key: int) -> int:

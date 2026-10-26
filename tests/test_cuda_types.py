@@ -15,6 +15,7 @@ from functools import cache
 from types import FunctionType, ModuleType, SimpleNamespace
 from typing import NamedTuple, TypeAliasType
 
+import compiled_code
 import cupy as cp
 import numpy as np
 import pytest
@@ -27,7 +28,19 @@ from numba.core.typing import templates
 from numba.cuda.dispatcher import CUDADispatcher
 from numba.cuda.target import CUDATypingContext
 from numba.np.numpy_support import as_dtype, from_dtype
-
+from patos.cuda.backend.arguments import Argument, argument
+from patos.cuda.backend.arithmetic import met, rules
+from patos.cuda.front.arithmetic import meet, operated
+from patos.cuda.front.declarations import (
+    Evaluated,
+    IntLiteral,
+    Kind,
+    NamedValue,
+    Signature,
+    declared,
+    named,
+)
+from patos.cuda.front.reading import Reading as FunctionReading
 from patos.cuda.primitives import Bitmap, Filter, PairTable, bits
 from patos.cuda.runtime import Workspace
 from patos.cuda.scalars import ArrayOf
@@ -64,18 +77,8 @@ from patos.cuda.typed import (
     warp_in_block,
     warp_index,
 )
-from patos.cuda.typed.arguments import Argument, argument
-from patos.cuda.typed.arithmetic import meet, met, operated
-from patos.cuda.typed.declarations import (
-    Evaluated,
-    IntLiteral,
-    Kind,
-    NamedValue,
-    Signature,
-    declared,
-    named,
-)
-from patos.cuda.typed.reading import Reading as FunctionReading
+
+_STREAM = cp.cuda.Stream.null
 
 # Checks, rewrites and typing rules need only the `cuda` extra, as numba-cuda decorates lazily;
 # what uploads or launches needs a device.
@@ -404,8 +407,8 @@ def ptx_of(launched: Kernel, *arguments, count: int = 1) -> str:
     A rename of its symbols leaves it as it is, and so does the environment pointer Numba declares
     for each function it links, used or not.
     """
-    launched[count](*arguments)
-    raw = launched.dispatcher.inspect_asm(next(iter(launched.dispatcher.overloads)))
+    launched[count](*arguments, stream=_STREAM)
+    raw = compiled_code.ptx(launched)
     code = re.sub(r"//[^\n]*|\.(?:version|target|address_size)[^\n]*", "", raw)
     unused = {
         found[1]
@@ -484,8 +487,9 @@ def decided(*, left: Reading, right: Reading) -> types.Type | None:
 def resolved(
     context: CUDATypingContext, function: Callable, *arguments: types.Type
 ) -> templates.Signature:
-    """The signature `function` takes on `arguments` on the CUDA target."""
-    with target_override("cuda"):
+    """The signature `function` takes on `arguments` on the CUDA target, as patos compiles."""
+    with target_override("cuda"), rules():
+        context.refresh()
         signature = context.resolve_function_type(function, arguments, {})
     assert signature is not None
     return signature
@@ -508,7 +512,7 @@ def probed(keys: np.ndarray, *, exact: bool, base: int) -> np.ndarray:
 
 @pytest.fixture(scope="module")
 def context() -> CUDATypingContext:
-    """A CUDA typing context carrying the rules the module registers."""
+    """A CUDA typing context, which carries patos's rules once `rules` puts them in force."""
     typing = CUDATypingContext()
     typing.refresh()
     return typing
@@ -1239,19 +1243,21 @@ _REFUSALS: dict[str, tuple[Refusal, type[Exception], str]] = {
         "Window: width is a float, not the int declared",
     ),
     "zeroing a field given no size": (
-        lambda _: Tables.take(Workspace(cp), zeroed=("mask",), slots=2, mask=1, shift=0),
+        lambda _: Tables.take(
+            Workspace(cp), stream=_STREAM, zeroed=("mask",), slots=2, mask=1, shift=0
+        ),
         TypeError,
         "Tables zeroes mask, given no size",
     ),
     "taking an open element": (
         lambda tables: Lookup.take(
-            Workspace(cp), tables=tables, keys=2, found=cp.zeros((1, 6), np.uint64)
+            Workspace(cp), stream=_STREAM, tables=tables, keys=2, found=cp.zeros((1, 6), np.uint64)
         ),
         TypeError,
         "Lookup.keys declares Vector[unsigned], which has no one dtype to take",
     ),
     "a strided device array, where the record marshals": (
-        lambda tables: argument(Tables(tables.slots[::2], 1, 2)),
+        lambda tables: argument(Tables(tables.slots[::2], 1, 2), 0),
         TypeError,
         "Tables.slots is strided, not contiguous",
     ),
@@ -1316,7 +1322,12 @@ def test_take_draws_a_sized_array_field_from_its_role_in_the_workspace(
     role = f"{__name__}.Tables.slots"
     workspace.take(role, 64, np.uint64).fill(junk)
     tables = Tables.take(
-        workspace, zeroed={"slots"} if zeroed else (), slots=size, mask=size, shift=-size
+        workspace,
+        stream=_STREAM,
+        zeroed={"slots"} if zeroed else (),
+        slots=size,
+        mask=size,
+        shift=-size,
     )
 
     assert (list(workspace), cp.shares_memory(tables.slots, workspace.buffers[role])) == (
@@ -1331,9 +1342,9 @@ def test_take_draws_a_sized_array_field_from_its_role_in_the_workspace(
 def test_take_under_a_given_role_keeps_two_records_of_one_class_apart() -> None:
     """Records of one class taken under its own role share buffers, so a caller names another."""
     workspace = Workspace(cp)
-    first = Tables.take(workspace, slots=4, mask=1, shift=0)
-    second = Tables.take(workspace, role="rewritten", slots=4, mask=1, shift=0)
-    again = Tables.take(workspace, slots=4, mask=1, shift=0)
+    first = Tables.take(workspace, stream=_STREAM, slots=4, mask=1, shift=0)
+    second = Tables.take(workspace, stream=_STREAM, role="rewritten", slots=4, mask=1, shift=0)
+    again = Tables.take(workspace, stream=_STREAM, slots=4, mask=1, shift=0)
 
     assert set(workspace) == {f"{__name__}.Tables.slots", "rewritten.slots"}
     assert cp.shares_memory(first.slots, again.slots)
@@ -1354,7 +1365,7 @@ def test_device_members_answer_on_the_device_and_leave_the_host_class() -> None:
         hashed, keys.astype(np.uint32), cuda.device_array((4, 6), np.uint64), exact=False
     )
     for probe in (narrow, wide, narrow):
-        probe.probe[len(keys)](5)
+        probe.probe[len(keys)](5, stream=_STREAM)
 
     assert np.array_equal(narrow.found.get(), probed(keys, exact=True, base=5))
     assert np.array_equal(cp.asarray(wide.found).get(), probed(keys, exact=False, base=5))
@@ -1374,14 +1385,14 @@ def test_a_constant_field_compiles_into_the_device_type_and_marshals_nothing() -
     windows = [Window(values, 2), Window(values, 3), Window(values, 2)]
     sums = [cp.zeros(8, np.uint64) for _ in windows]
     for window, out in zip(windows, sums, strict=True):
-        window.sums[8](out)
+        window.sums[8](out, stream=_STREAM)
 
     assert [out.get().tolist() for out in sums] == [
         [sum(range(start, start + width)) if start + width <= 8 else 0 for start in range(8)]
         for width in (2, 3, 2)
     ]
     assert len(Window.sums.compiled) == 2
-    assert all(argument(window)[1] == argument(values)[1] for window in windows)
+    assert all(argument(window, 0)[1] == argument(values, 0)[1] for window in windows)
 
 
 @gpu
@@ -1405,8 +1416,8 @@ def test_a_launch_converts_its_scalars_and_compiles_one_signature(
     A launch over no items marshals and refuses nothing.
     """
     row, table = cp.zeros(4, np.int64), cp.zeros(shape, np.int16)
-    _DEVICE.scatter[1](row, table, *map(wrap, scalars))
-    _DEVICE.scatter[0](row.astype(np.int32), table, 1.5, 0, 0, True)
+    _DEVICE.scatter[1](row, table, *map(wrap, scalars), stream=_STREAM)
+    _DEVICE.scatter[0](row.astype(np.int32), table, 1.5, 0, 0, True, stream=_STREAM)
 
     assert row.get().tolist() == list(scalars)
     assert table.get().ravel().tolist() == [0] * (shape[0] * shape[1] - 1) + [scalars[1]]
@@ -1424,7 +1435,8 @@ def scattered(**changes: int | float | bool | cp.ndarray) -> None:
     """
     fitting = {"row": cp.zeros(4, np.int64), "table": cp.zeros((2, 3), np.int16)}
     _DEVICE.scatter[1](
-        *(fitting | {"small": 1, "signed": 1, "wide": 1, "flag": True} | changes).values()
+        *(fitting | {"small": 1, "signed": 1, "wide": 1, "flag": True} | changes).values(),
+        stream=_STREAM,
     )
 
 
@@ -1450,7 +1462,7 @@ _UNDECLARED = {
         "scatter's `table` is strided, not contiguous, where Matrix[i16] is declared",
     ),
     "open element": (
-        lambda: total[4](cp.zeros(4, np.int32), cp.zeros(1, np.uint64)),
+        lambda: total[4](cp.zeros(4, np.int32), cp.zeros(1, np.uint64), stream=_STREAM),
         TypeError,
         "total's `values` is array(int32, 1d, C), where",
     ),
@@ -1465,7 +1477,7 @@ _UNDECLARED = {
         "scatter's `signed` is a float, not the i16 declared",
     ),
     "device call": (
-        lambda: _DEVICE.delegate[1](cp.zeros(2, np.int32), cp.zeros(1, np.uint8)),
+        lambda: _DEVICE.delegate[1](cp.zeros(2, np.int32), cp.zeros(1, np.uint8), stream=_STREAM),
         TypingError,
         "first's `values` receives array(int32, 1d, C) where Vector[u8] is declared",
     ),
@@ -1496,7 +1508,7 @@ def test_an_open_element_compiles_once_per_dtype_it_meets() -> None:
         cp.arange(5, dtype=np.uint32),
         cp.arange(5, dtype=np.uint8),
     ):
-        total[5](values, sums)
+        total[5](values, sums, stream=_STREAM)
 
     assert (sums.get().tolist(), len(total.compiled)) == ([40], 3)
 
@@ -1519,8 +1531,10 @@ def test_the_hash_records_answer_on_the_device_what_the_host_built_them_from(
     flags = np.zeros(1024, dtype=np.bool_)
     flags[[key & 1023 for key in entries]] = True
     found = cp.zeros((len(keys), 3), np.int64)
-    table, members = PairTable.build(entries), Filter.build(entries)
-    looked_up[len(keys)](table, members, Bitmap.pack(flags), cp.asarray(keys), found)
+    table, members = PairTable.build(entries, stream=_STREAM), Filter.build(entries)
+    looked_up[len(keys)](
+        table, members, Bitmap.pack(flags), cp.asarray(keys), found, stream=_STREAM
+    )
 
     rows = found.get()
     assert rows[:, 0].tolist() == [entries.get(key, -1) for key in keys.tolist()]
@@ -2026,7 +2040,7 @@ def test_a_function_with_a_closure_reads_the_live_globals_and_the_names_its_scop
     namespace = executed(_MADE_IN_A_MODULE)
     namespace.later.py_func.__globals__["bump"] = 5
     out = cp.zeros(4, np.int32)
-    namespace.run[4](out)
+    namespace.run[4](out, stream=_STREAM)
 
     assert out.get().tolist() == [((i + 10) * 5 + 2) * 1000 + i + 1 for i in range(4)]
     assert namespace.scaled.py_func.__globals__ is namespace.later.py_func.__globals__
@@ -2097,7 +2111,7 @@ def test_an_items_loop_visits_each_item_of_the_kernel_below_its_bound_once(
     blocks, threads = visit.grid(launched)
     held = blocks * threads // per.lanes(threads)
     visits = cp.zeros(max(count, held) + 1, np.int32)
-    visit[launched](visits, count)
+    visit[launched](visits, count, stream=_STREAM)
 
     reached = count if strided else min(count, held)
     assert visits.get().tolist() == [1] * reached + [0] * (len(visits) - reached)
@@ -2111,7 +2125,7 @@ def test_an_items_loop_skips_by_continue_leaves_by_break_and_may_end_inclusive(
 ) -> None:
     """`continue` goes on to the thread's next item and `break` ends its loop."""
     visits, bound = cp.zeros(140, np.int32), cp.array([live], np.int32)
-    _EXITS.even_below[3](visits, bound, cap)
+    _EXITS.even_below[3](visits, bound, cap, stream=_STREAM)
 
     assert visits.get().tolist() == [int(i % 2 == 0 and i < cap and i <= live) for i in range(140)]
 
@@ -2129,7 +2143,7 @@ def test_an_items_loop_reads_its_bound_again_each_pass_as_a_while_loop_does(
         bound += bound < cap
         reached += 1
     visits, held = cp.zeros(24, np.int32), cp.array([live], np.int32)
-    _EXITS.growing[1](visits, held, cap)
+    _EXITS.growing[1](visits, held, cap, stream=_STREAM)
 
     assert visits.get().tolist() == [int(i in seen) for i in range(24)]
     assert held.get().tolist() == [bound]
@@ -2181,7 +2195,7 @@ def test_a_named_value_converts_its_fields_and_is_read_passed_and_returned_on_th
     data = (np.arange(60) * 3 + 7).astype(np.uint8)
     out = cp.zeros((len(centers), 6), np.int64)
     centers_on_device = cp.asarray(np.array(centers, np.int64))
-    _NAMED.named[len(centers)](centers_on_device, reach, cp.asarray(data), out)
+    _NAMED.named[len(centers)](centers_on_device, reach, cp.asarray(data), out, stream=_STREAM)
 
     assert out.get().tolist() == named_rows(centers, reach, data)
 
@@ -2190,12 +2204,12 @@ def test_a_named_value_converts_its_fields_and_is_read_passed_and_returned_on_th
 def test_a_named_value_of_other_fields_than_declared_is_refused_where_it_is_passed() -> None:
     """Numba converts one named tuple to no other, so a call is refused, never converted."""
     with pytest.raises(TypingError, match=r"`span` receives .* where Span is declared"):
-        _NAMED.misfit[1](cp.zeros(1, np.int32))
+        _NAMED.misfit[1](cp.zeros(1, np.int32), stream=_STREAM)
     data, out = cp.arange(4, dtype=np.uint8), cp.zeros(1, np.int64)
-    _NAMED.viewed[1](data, out)
+    _NAMED.viewed[1](data, out, stream=_STREAM)
     assert out.get().tolist() == [2]
     with pytest.raises(TypingError, match=r"`view` receives .* where Viewed is declared"):
-        _NAMED.viewed[1](data.astype(np.uint16), out)
+        _NAMED.viewed[1](data.astype(np.uint16), out, stream=_STREAM)
 
 
 @gpu
@@ -2430,14 +2444,14 @@ def test_a_call_of_a_method_its_named_value_lacks_or_with_other_arguments_is_ref
 ) -> None:
     """numba-cuda raises its own error for an unknown attribute and patos Numba's for the rest."""
     with pytest.raises(NumbaError, match=refusal):
-        getattr(_MEMBERS, launched)[1](cp.zeros(1, np.int32))
+        getattr(_MEMBERS, launched)[1](cp.zeros(1, np.int32), stream=_STREAM)
 
 
 @gpu
 def test_a_method_of_a_named_value_takes_its_arguments_by_keyword_as_a_function_does() -> None:
     """`bounds.holds(at=3)` and `bounds.widened(by=2)` name the parameters of the method."""
     out = cp.zeros(3, np.int32)
-    _MEMBERS.keyworded[1](out)
+    _MEMBERS.keyworded[1](out, stream=_STREAM)
 
     assert out.get().tolist() == [1, 8, 0]
 
@@ -2467,7 +2481,7 @@ def test_a_named_value_reached_only_through_a_local_alias_binds_its_methods() ->
         """
     )
     out = cp.zeros(4, np.int32)
-    namespace.run[4](out)
+    namespace.run[4](out, stream=_STREAM)
 
     assert out.get().tolist() == [9 - item for item in range(4)]
 
@@ -2589,12 +2603,12 @@ def test_lanes_take_no_arithmetic_and_no_operation_they_do_not_fit() -> None:
     """
     words, out = cp.arange(4, dtype=np.uint32), cp.zeros(4, np.uint32)
     with pytest.raises(NumbaError, match=r"absdiff takes \(u8x4, u8x4\);.* not \(u32, u8x4\)"):
-        _LANES.mismatched[4](words, out)
+        _LANES.mismatched[4](words, out, stream=_STREAM)
     with pytest.raises(NumbaError, match="u8x4"):
-        _LANES.added[4](words, out)
+        _LANES.added[4](words, out, stream=_STREAM)
     with pytest.raises(NumbaError, match=r"absdiff: missing a required argument: 'b'"):
-        _LANES.short[4](words, out)
-    _LANES.keyed[4](words, out)
+        _LANES.short[4](words, out, stream=_STREAM)
+    _LANES.keyed[4](words, out, stream=_STREAM)
     assert out.get().tolist() == [7, 6, 5, 4]
 
 
@@ -2603,7 +2617,7 @@ def test_lanes_convert_to_no_integer_narrower_than_their_word() -> None:
     """A lanes value read as a `u8` would drop three lanes, so the source goes through `u32`."""
     words, out = cp.arange(4, dtype=np.uint32), cp.zeros(4, np.uint32)
     with pytest.raises(NumbaError, match=r"u8x4 to uint8: lanes are a 32-bit word"):
-        _LANES.narrowed[4](words, out)
+        _LANES.narrowed[4](words, out, stream=_STREAM)
 
 
 _SHAPES = executed(
@@ -2667,7 +2681,7 @@ def test_an_items_loop_nests_branches_may_assign_its_item_and_ends_with_a_return
     ends all the items of its thread, so thread 5 visits none.
     """
     visits = cp.zeros(128, np.int32)
-    getattr(_SHAPES, shape)[32](visits, 70, *([1] if shape == "branched" else []))
+    getattr(_SHAPES, shape)[32](visits, 70, *([1] if shape == "branched" else []), stream=_STREAM)
 
     assert visits.get().tolist() == [_STRIDED[shape](i) for i in range(128)]
 
@@ -2676,7 +2690,7 @@ def test_an_items_loop_nests_branches_may_assign_its_item_and_ends_with_a_return
 def test_an_items_loop_of_a_record_kernel_visits_the_items_the_record_is_given() -> None:
     """A kernel defined in a record loops over items as any kernel does."""
     counted = _SHAPES.Counted(cp.zeros(100, np.int32))
-    counted.count[32](70)
+    counted.count[32](70, stream=_STREAM)
 
     assert counted.visits.get().tolist() == [int(i < 70) for i in range(100)]
 
@@ -2703,7 +2717,7 @@ def test_a_named_value_takes_its_defaults_and_its_keywords_in_the_order_of_its_f
         """
     )
     out = cp.zeros(3, np.int64)
-    built.build[1](out, at)
+    built.build[1](out, at, stream=_STREAM)
 
     offset, step = wrapped(np.uint32, at), wrapped(np.int32, at)
     wanted = [offset + 1, wrapped(np.uint32, at + 1) + step, offset + 2]
@@ -2733,10 +2747,10 @@ def test_a_function_without_parameters_inlines_into_its_callers_unless_it_stays_
         """
     ).f
     out = cp.zeros(32, np.int32)
-    inlined[32](out)
+    inlined[32](out, stream=_STREAM)
     defines = re.findall(
         r"define [^@]*@\S*?(folded|kept)",
-        inlined.dispatcher.inspect_llvm(next(iter(inlined.dispatcher.overloads))),
+        compiled_code.llvm(inlined),
     )
 
     assert defines == ["kept"]

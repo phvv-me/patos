@@ -1,19 +1,22 @@
-"""The numeric types import where no CUDA stack is installed, as host table builders need."""
+"""The numeric types and the annotation front import where no CUDA stack is installed, as host
+table builders and checks need."""
 
 import json
 import operator
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
-
 from patos.cuda import scalars
 
-# A fresh interpreter in which numba, numba-cuda, CuPy, cuda-python and llvmlite cannot import.
+# A fresh interpreter in which numba, numba-cuda, CuPy, cuda-python and llvmlite cannot import, and
+# which reads and checks a device function's annotations with the front alone.
 _WITHOUT_CUDA = """
 import json, sys
+from pathlib import Path
 
 stack = {"numba", "numba_cuda", "cupy", "cuda", "llvmlite"}
 for name in (*stack, "numba.cuda", "cuda.core"):
@@ -21,9 +24,27 @@ for name in (*stack, "numba.cuda", "cuda.core"):
 
 import numpy as np
 
-from patos.cuda.scalars import SPELLINGS, ArrayOf, Matrix, Subscript, i16, u8, u8x4, u32, u64
+from patos.cuda.front.checks import read
+from patos.cuda.front.record import Record
+from patos.cuda.front.rewrite import Rewrite
+from patos.cuda.scalars import (
+    SPELLINGS, ArrayOf, Matrix, Subscript, Vector, i16, u8, u8x4, u32, u64,
+)
 
-print(json.dumps({
+
+class Span(Record):
+    start: u32
+    end: u32
+
+
+def width(span: Span, out: Vector[u32]) -> u32:
+    out[0] = span.end
+    return span.end - span.start
+
+
+rebuilt = Rewrite(read(width, kernel=False)).rebuilt()
+
+Path(sys.argv[1]).write_text(json.dumps({
     "array": Matrix[u8] == ArrayOf(element=np.uint8, ndim=2),
     "scalar": type(u32(7)).__name__,
     "spelled": SPELLINGS[np.int16],
@@ -31,19 +52,28 @@ print(json.dumps({
     "lanes": u8x4.name,
     "subscript": Subscript.__name__,
     "wide": int(u64(2**64 - 1)),
+    "front": [rebuilt.__name__, repr(Span(3, end=5))],
     "loaded": [name for name, held in sys.modules.items() if held and name.split(".")[0] in stack],
 }))
 """
 
 
-def test_the_numeric_types_import_without_numba_cupy_or_cuda() -> None:
-    """`patos.cuda.scalars` loads no CUDA module, and its types annotate and convert as ever."""
+def test_the_numeric_types_and_the_front_import_without_numba_cupy_or_cuda(tmp_path: Path) -> None:
+    """`patos.cuda.scalars` and `patos.cuda.front` load no CUDA module.
+
+    The types annotate and convert as ever, and the front reads, checks and rebuilds a device
+    function and validates a record.
+    """
+    report = tmp_path / "report.json"
     ran = subprocess.run(
-        [sys.executable, "-c", _WITHOUT_CUDA], capture_output=True, text=True, timeout=120
+        [sys.executable, "-c", _WITHOUT_CUDA, str(report)],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
 
     assert ran.returncode == 0, ran.stderr
-    assert json.loads(ran.stdout) == {
+    assert json.loads(report.read_text()) == {
         "array": True,
         "scalar": "uint32",
         "spelled": "i16",
@@ -51,6 +81,7 @@ def test_the_numeric_types_import_without_numba_cupy_or_cuda() -> None:
         "lanes": "u8x4",
         "subscript": "Subscript",
         "wide": 2**64 - 1,
+        "front": ["width", "Span(start=np.uint32(3), end=np.uint32(5))"],
         "loaded": [],
     }
 
