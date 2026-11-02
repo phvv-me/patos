@@ -96,8 +96,8 @@ def on_post_build(config: MkDocsConfig) -> None:
             if any(Path(doc_path).stem.endswith(suffix) for suffix in _LOCALE_SUFFIXES):
                 continue
             markdown = _read_page(docs_dir, doc_path)
-            title = _title_for(markdown, doc_path)
-            index_lines.append(f"- [{title}]({_page_url(site_url, doc_path)})")
+            title = _title_for(markdown, doc_path=doc_path)
+            index_lines.append(f"- [{title}]({_page_url(site_url, doc_path=doc_path)})")
             full_lines.append(f"\n# {title}\n\n{markdown}\n")
 
     (site_dir / "llms.txt").write_text("\n".join(index_lines) + "\n", encoding="utf-8")
