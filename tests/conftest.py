@@ -2,6 +2,7 @@ import importlib.util
 from abc import ABC, abstractmethod
 
 import pytest
+
 from patos import Registry
 
 # An extra's suite collects only where the extra is installed, so the core gate never imports

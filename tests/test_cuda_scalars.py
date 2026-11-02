@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+
 from patos.cuda import scalars
 
 # A fresh interpreter in which numba, numba-cuda, CuPy, cuda-python and llvmlite cannot import, and

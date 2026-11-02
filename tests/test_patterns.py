@@ -4,6 +4,7 @@ from typing import ClassVar, Self, cast
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+
 from patos import FlyweightMeta, Registry, Singleton
 from patos.flyweight import Arg
 

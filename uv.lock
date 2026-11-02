@@ -1185,11 +1185,8 @@ wheels = [
 
 [[package]]
 name = "patos"
-version = "0.0.14"
+version = "0.0.15"
 source = { editable = "." }
-dependencies = [
-    { name = "pydantic" },
-]
 
 [package.optional-dependencies]
 cuda = [
@@ -1198,9 +1195,11 @@ cuda = [
     { name = "cupy-cuda13x" },
     { name = "numba-cuda" },
     { name = "numpy" },
+    { name = "pydantic" },
 ]
 dev = [
     { name = "hypothesis" },
+    { name = "pydantic" },
     { name = "pyrefly" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1212,9 +1211,13 @@ dev = [
 docs = [
     { name = "mkdocs-material" },
 ]
+models = [
+    { name = "pydantic" },
+]
 sql = [
     { name = "inflection" },
     { name = "pgvector" },
+    { name = "pydantic" },
     { name = "sqlalchemy" },
     { name = "sqlmodel" },
     { name = "typing-extensions" },
@@ -1236,7 +1239,10 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'cuda'", specifier = ">=2" },
     { name = "numpy", marker = "extra == 'torch'", specifier = ">=1.26" },
     { name = "pgvector", marker = "extra == 'sql'", specifier = ">=0.5,<0.6" },
-    { name = "pydantic", specifier = ">=2.13.4,<3" },
+    { name = "pydantic", marker = "extra == 'cuda'", specifier = ">=2.13.4,<3" },
+    { name = "pydantic", marker = "extra == 'dev'", specifier = ">=2.13.4,<3" },
+    { name = "pydantic", marker = "extra == 'models'", specifier = ">=2.13.4,<3" },
+    { name = "pydantic", marker = "extra == 'sql'", specifier = ">=2.13.4,<3" },
     { name = "pyrefly", marker = "extra == 'dev'", specifier = ">=1.1.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5" },
@@ -1249,7 +1255,7 @@ requires-dist = [
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.86,<0.1" },
     { name = "typing-extensions", marker = "extra == 'sql'", specifier = ">=4.15,<5" },
 ]
-provides-extras = ["cuda", "torch", "sql", "dev", "docs"]
+provides-extras = ["models", "cuda", "torch", "sql", "dev", "docs"]
 
 [[package]]
 name = "pgvector"

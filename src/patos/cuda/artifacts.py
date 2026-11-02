@@ -26,7 +26,7 @@ from types import ModuleType
 from cuda.core import Device, ObjectCode
 from cuda.core import Kernel as Loaded
 
-from ..bases import FrozenModel, Runtime
+from ..models import FrozenModel, Runtime
 from .sources import digest, reached
 
 # The header libraries C++ units are pinned to.

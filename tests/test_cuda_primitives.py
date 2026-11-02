@@ -12,6 +12,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from numba.core.errors import TypingError
+
 from patos.cuda.primitives import block, integers, search, warp
 from patos.cuda.typed import (
     Kernel,

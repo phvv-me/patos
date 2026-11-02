@@ -23,7 +23,7 @@ from numba.cuda.compiler import compile_cuda, kernel_fixup
 from numba.cuda.core.compiler_lock import global_compiler_lock
 from numba.cuda.cudadrv import driver, nvrtc, nvvm
 
-from ...bases import FrozenModel, Runtime
+from ...models import FrozenModel, Runtime
 from ..artifacts import Cubin
 from .arithmetic import rules
 

@@ -2,6 +2,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+
 from patos import SourceRegistration, sha256_text_file, sha256_text_sources, statement_bytes
 
 _SEAL = "registration_sha256"

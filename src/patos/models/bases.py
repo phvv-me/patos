@@ -8,8 +8,8 @@ from pydantic import ConfigDict, GetCoreSchemaHandler, GetPydanticSchema
 from pydantic.main import BaseModel
 from pydantic_core import core_schema
 
-from .flyweight import FlyweightMeta
-from .registry import Registry
+from ..flyweight import FlyweightMeta
+from ..registry import Registry
 
 if TYPE_CHECKING:
     # Pydantic does not export its model metaclass publicly, so the type checker sees it

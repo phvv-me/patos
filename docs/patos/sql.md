@@ -23,7 +23,6 @@ type they expect.
 
 ```python
 from datetime import datetime
-from typing import cast
 
 from sqlmodel import Field, SQLModel, select
 
@@ -34,10 +33,7 @@ class Note(SQLModel, table=True):
     id: sql.Column[int] = Field(primary_key=True)
     title: sql.Column[str]
     attributes: sql.Column[dict] = Field(default_factory=dict, sa_type=sql.TypedJSONB)
-    embedding: sql.Column[list[float] | None] = Field(
-        default=None,
-        sa_type=cast(type[list[float]], sql.CosineHalfvec(768)),
-    )
+    embedding: sql.Column[list[float] | None] = Field(default=None, sa_type=sql.CosineHalfvec(768))
     created_at: sql.Column[datetime]
 
 

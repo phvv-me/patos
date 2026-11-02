@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+
 from patos.cuda.primitives import bits, block, monoid, warp
 from patos.cuda.typed import Kernel, Matrix, Per, kernel, number, thread_index
 

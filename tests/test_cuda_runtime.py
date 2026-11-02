@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
+
 from patos.cuda.runtime import Workspace, settle_uploads
 
 roles = st.sampled_from(["scan", "keys", "out"])

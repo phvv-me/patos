@@ -34,6 +34,10 @@ from patos import Registry, Singleton
 Or copy a single duck. Open its page, copy the source from the **Source** section, and paste it
 into your own project. No dependency, no version pin, no tool, just one module you own.
 
+The pydantic house models are an optional extension too. `pip install "patos[models]"` and import
+them from `patos.models`; `from patos import FrozenModel` still works and imports pydantic on first
+use, so `import patos` itself needs no third-party package.
+
 The SQL namespace is an optional extension rather than a top level import. Install its extra and
 import the namespace when a project uses PostgreSQL.
 

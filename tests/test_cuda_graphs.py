@@ -1,6 +1,7 @@
 import cupy as cp
 import numpy as np
 import pytest
+
 from patos.cuda.graphs import Arena, Captured, Graphs, Unrecordable, branch, signal
 
 _SIZES = (1, 513, 40_000_000, 100)

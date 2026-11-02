@@ -28,6 +28,7 @@ from numba.core.typing import templates
 from numba.cuda.dispatcher import CUDADispatcher
 from numba.cuda.target import CUDATypingContext
 from numba.np.numpy_support import as_dtype, from_dtype
+
 from patos.cuda.backend.arguments import Argument, argument
 from patos.cuda.backend.arithmetic import met, rules
 from patos.cuda.front.arithmetic import meet, operated

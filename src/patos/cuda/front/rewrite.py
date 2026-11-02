@@ -20,7 +20,7 @@ from typing import Protocol
 
 import numpy as np
 
-from ...bases import FrozenModel, Runtime
+from ...models import FrozenModel, Runtime
 from .. import scalars
 from ..scalars import Lanes, i32, i64
 from .declarations import Returns, Signature

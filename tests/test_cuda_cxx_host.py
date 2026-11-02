@@ -8,9 +8,10 @@ from types import SimpleNamespace
 
 import cupy as cp
 import pytest
+from test_cuda_cxx import compiled_by, compiles, summed, unit
+
 from patos.cuda.backend import cxx as cxx_module
 from patos.cuda.typed import Compiler
-from test_cuda_cxx import compiled_by, compiles, summed, unit
 
 pytestmark = pytest.mark.skipif(not cp.cuda.is_available(), reason="launches need a GPU")
 

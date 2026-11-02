@@ -4,6 +4,7 @@ import cupy as cp
 import numpy as np
 import pytest
 from numba.cuda import dispatcher
+
 from patos.cuda import artifacts
 from patos.cuda.typed import Struct, Vector, device, i32, i64, items, kernel, u64
 

@@ -25,7 +25,7 @@ from typing import (
 
 import numpy as np
 
-from ...bases import FrozenModel, Runtime
+from ...models import FrozenModel, Runtime
 from ..scalars import SPELLINGS, ArrayOf, ConstantOf, Lanes, canonical
 
 if TYPE_CHECKING:

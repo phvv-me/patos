@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+
 from patos.cuda.primitives import monoid, offsets
 from patos.cuda.runtime import Workspace
 from patos.cuda.typed import (

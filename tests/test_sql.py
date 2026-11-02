@@ -22,9 +22,7 @@ class Doc(sql.Model, table=True):
     summary = sql.Nullable(str)
     category = sql.Field(str)
     attributes: sql.Column[dict] = Field(default_factory=dict, sa_type=sql.TypedJSONB)
-    embedding: sql.Column[list[float] | None] = Field(
-        default=None, sa_type=cast(type[list[float]], sql.CosineHalfvec(3))
-    )
+    embedding: sql.Column[list[float] | None] = Field(default=None, sa_type=sql.CosineHalfvec(3))
     created_at: sql.Column[datetime]
 
 

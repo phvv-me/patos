@@ -8,6 +8,7 @@ import compiled_code
 import cupy as cp
 import numpy as np
 import pytest
+
 from patos.cuda.primitives import EMPTY_KEY, PairTable, StaticMap
 from patos.cuda.typed import Matrix, Vector, i64, items, kernel, u64
 

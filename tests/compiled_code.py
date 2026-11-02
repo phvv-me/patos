@@ -2,6 +2,7 @@
 
 from numba.cuda.codegen import disassemble_cubin
 from numba.cuda.np.numpy_support import as_dtype
+
 from patos.cuda.backend.compiler import Built, built
 from patos.cuda.typed import Kernel
 

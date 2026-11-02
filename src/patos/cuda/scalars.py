@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Protocol, Self, SupportsInt, TypeVar, cast, fi
 
 import numpy as np
 
-from ..bases import FrozenModel
+from ..models import FrozenModel
 
 if TYPE_CHECKING:
     from numpy.typing import DTypeLike

@@ -19,6 +19,17 @@ pip install patos
 
 Or copy a single duck. Open its docs page, copy the source from the Source section, and paste it into your own project. No dependency, no version pin, no tool, just one module you own.
 
+The pydantic house models (`Model`, `FrozenModel`, `Component`, ...) live in `patos.models` and
+install pydantic only when a project asks for them.
+
+```sh
+pip install "patos[models]"
+```
+
+```python
+from patos.models import FrozenModel
+```
+
 The optional PostgreSQL toolkit installs SQLAlchemy, pgvector, and inflection only when a
 project asks for them.
 

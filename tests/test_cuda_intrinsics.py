@@ -2,6 +2,7 @@
 of it is register arithmetic."""
 
 import pytest
+
 from patos.cuda.backend import intrinsics
 
 # An instruction that writes the carry flag, or reads it, is ordered against the others.

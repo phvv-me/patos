@@ -10,6 +10,7 @@ from pathlib import Path
 import cupy as cp
 import numpy as np
 import pytest
+
 from patos.cuda.typed import Struct, Vector, i32, kernel
 
 _STREAM = cp.cuda.Stream.null

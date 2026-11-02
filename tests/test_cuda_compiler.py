@@ -5,6 +5,7 @@ import cupy as cp
 import numpy as np
 import pytest
 from cuda.bindings import nvvm as bindings
+
 from patos.cuda.backend.compiler import _nvvm
 from patos.cuda.typed import Vector, cuda, kernel
 

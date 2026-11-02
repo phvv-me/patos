@@ -16,6 +16,7 @@ import compiled_code
 import cupy as cp
 import numpy as np
 import pytest
+
 from patos.cuda.primitives import warp
 from patos.cuda.typed import (
     Compiler,

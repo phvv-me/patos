@@ -57,7 +57,7 @@ from numba import cuda, types
 from numba.core.typing import templates
 from numba.cuda import cgutils
 
-from ...bases import FrozenModel
+from ...models import FrozenModel
 from ..artifacts import stored, user_cache
 from .intrinsics import as_intrinsic, read_stub
 from .lanes import LaneType

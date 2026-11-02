@@ -4,6 +4,21 @@ All notable changes to patos are documented here.
 
 The format follows Keep a Changelog, and releases are cut from the version in `pyproject.toml`.
 
+## 0.0.15
+
+### Changed
+
+- The pydantic house models (`Model`, `FrozenModel`, `FlexModel`, `OpenModel`, `Component`,
+  `InternedComponent`, `Projection`, `SourceRegistration`, ...) moved to `patos.models`, behind the
+  new `models` extra. The core now has no dependency, and `import patos` never imports pydantic.
+  `from patos import FrozenModel` keeps working: the names resolve lazily from `patos.models`. The
+  `sql` and `cuda` extras carry pydantic themselves.
+
+### Fixed
+
+- Test imports are sorted again, and the SQL example passes `sa_type` without a cast, which the current
+  type checkers reject.
+
 ## 0.0.14
 
 ### Added

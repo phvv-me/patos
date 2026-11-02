@@ -2,6 +2,7 @@ import functools
 from abc import ABC, abstractmethod
 
 import pytest
+
 from patos import Registry, Strategy, StrategyError, StrFlag, value_dispatch
 
 

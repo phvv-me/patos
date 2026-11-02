@@ -5,6 +5,7 @@ import cupy as cp
 import numpy as np
 import pytest
 from cuda.core import Device
+
 from patos.cuda.runtime import ArrayInterface
 from patos.cuda.typed import Vector, i32, items, kernel
 
